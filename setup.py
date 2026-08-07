@@ -9,11 +9,13 @@ __version__ = None
 with open(version_path) as f:
     exec(f.read(), globals())
 
-req_path = os.path.join(folder, "requirements.txt")
-install_requires = []
-if os.path.exists(req_path):
-    with open(req_path) as fp:
-        install_requires = [line.strip() for line in fp]
+req_path = os.path.join(folder, "requirements", "base.txt")
+with open(req_path, encoding="utf-8") as fp:
+    install_requires = [
+        line.strip()
+        for line in fp
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 extra_require = {
     "multimodal": ["Pillow"],

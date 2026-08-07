@@ -1,0 +1,7 @@
+# LMFlow-Agent rollout environment, Python 3.12 / Linux x86_64 / CUDA 13.0.
+# vLLM 0.25.1 intentionally pins a different PyTorch version than training.
+safetensors==0.8.0
+tokenizers==0.22.2
+torch==2.11.0
+transformers==5.14.1
+vllm==0.25.1
