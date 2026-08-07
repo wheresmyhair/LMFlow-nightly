@@ -4,4 +4,3 @@ sphinx_design
 myst-parser
 sphinx-autoapi
 matplotlib
-numpydoc

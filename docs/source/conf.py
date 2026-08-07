@@ -37,7 +37,7 @@ extensions = [
     "matplotlib.sphinxext.plot_directive",
     # "myst_nb",
     # "nbsphinx",  # Uncomment and comment-out MyST-NB for local testing purposes.
-    "numpydoc",
+    "sphinx.ext.napoleon",
     # "sphinx_togglebutton",
     # "sphinx_favicon",
 ]
@@ -46,6 +46,35 @@ autosummary_generate = True
 
 autoapi_type = "python"
 autoapi_dirs = ["../../src"]
+autoapi_options = [
+    "members",
+    "undoc-members",
+    "show-inheritance",
+    "show-module-summary",
+    "special-members",
+]
+
+myst_heading_anchors = 4
+show_warning_types = True
+
+_autoapi_internal_modules = (
+    "lmflow.pipeline.utils",
+    "lmflow.utils.deprecated",
+    "lmflow.utils.protocol",
+)
+
+
+def _skip_internal_autoapi_modules(app, what, name, obj, skip, options):
+    if what in {"module", "package"} and any(
+        name == module_name or name.startswith(f"{module_name}.")
+        for module_name in _autoapi_internal_modules
+    ):
+        return True
+    return skip
+
+
+def setup(app):
+    app.connect("autoapi-skip-member", _skip_internal_autoapi_modules)
 
 source_suffix = {
     ".rst": "restructuredtext",
