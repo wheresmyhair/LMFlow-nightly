@@ -17,6 +17,7 @@ concurrency:
 jobs:
   build:
     name: Build documentation
+    if: github.repository == 'OptimalScale/LMFlow'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
