@@ -148,21 +148,21 @@ class Dataset:
                 )
 
     def from_dict(self, dict_obj: dict, *args, **kwargs):
-        r"""
-        Create a Dataset object from a dictionary.
+        """Populate this dataset from an LMFlow dataset dictionary.
 
-        Return a Dataset given a dict with format:
+        The expected dictionary shape is::
+
             {
                 "type": TYPE,
                 "instances": [
                     {
-                        "key_1": VALUE_1.1,
-                        "key_2": VALUE_1.2,
+                        "key_1": VALUE_1_1,
+                        "key_2": VALUE_1_2,
                         ...
                     },
                     {
-                        "key_1": VALUE_2.1,
-                        "key_2": VALUE_2.2,
+                        "key_1": VALUE_2_1,
+                        "key_2": VALUE_2_2,
                         ...
                     },
                     ...
@@ -170,21 +170,18 @@ class Dataset:
             }
 
         Parameters
-        -----------
-
-        dict_obj : dict.
-            A dictionary containing the dataset information.
-
-        args : Optional.
-            Positional arguments.
-
-        kwargs : Optional.
-            Keyword arguments.
+        ----------
+        dict_obj : dict
+            Dataset data containing ``type`` and ``instances`` keys.
+        *args
+            Positional arguments passed to the selected dataset backend.
+        **kwargs
+            Keyword arguments passed to the selected dataset backend.
 
         Returns
-        ---------
-
-        self : Dataset object.
+        -------
+        Dataset
+            This dataset instance.
         """
         if self.backend == "huggingface":
             if KEY_TYPE not in dict_obj:
@@ -247,29 +244,31 @@ class Dataset:
         return dataset.from_dict(dict_obj)
 
     def to_dict(self):
-        r"""
-        Returns
-        ---------
+        """Convert this dataset to the LMFlow dictionary format.
 
-        Return a dict represents the dataset:
+        The returned dictionary has the following shape::
+
             {
                 "type": TYPE,
                 "instances": [
                     {
-                        "key_1": VALUE_1.1,
-                        "key_2": VALUE_1.2,
+                        "key_1": VALUE_1_1,
+                        "key_2": VALUE_1_2,
                         ...
                     },
                     {
-                        "key_1": VALUE_2.1,
-                        "key_2": VALUE_2.2,
+                        "key_1": VALUE_2_1,
+                        "key_2": VALUE_2_2,
                         ...
                     },
                     ...
                 ]
             }
 
-        A python dict object represents the content of this dataset.
+        Returns
+        -------
+        dict
+            Dataset data containing ``type`` and ``instances`` keys.
         """
         if self.backend == "huggingface":
             dict_obj = {}

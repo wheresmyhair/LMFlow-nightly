@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GemmaConversationTemplate(ConversationTemplate):
     def encode_conversation(self, *args, **kwargs):
+        """Encode a Gemma conversation and handle optional system prompts."""
         if kwargs.get("system"):
             logger.warning(
                 "As of now, Gemma does not support system messages officially. "

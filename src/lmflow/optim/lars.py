@@ -7,6 +7,7 @@ from torch.optim.optimizer import Optimizer
 class LARS(Optimizer):
     r"""Extends SGD in PyTorch with LARS scaling from the paper
     `Large batch training of Convolutional Networks`__.
+
     .. note::
         The application of momentum in the SGD part is modified according to
         the PyTorch standards. LARS scaling fits into the equation in the

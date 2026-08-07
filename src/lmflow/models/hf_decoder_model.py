@@ -232,30 +232,33 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
         return tokenized_datasets
 
     def encode(self, input: Union[str, list[str]], *args, **kwargs) -> Union[list[int], list[list[int]]]:
-        """
-        Perform encoding process of the tokenizer.
+        """Encode one string or a batch of strings with the model tokenizer.
 
         Parameters
-        ------------
-        inputs : str or list.
-            The text sequence.
-
-        args : Optional.
-            Positional arguments.
-
-        kwargs : Optional.
-            Keyword arguments.
+        ----------
+        input : str or list[str]
+            Text input to encode.
+        *args
+            Positional tokenizer arguments.
+        **kwargs
+            Keyword tokenizer arguments.
 
         Returns
-        ------------
-        outputs :
-            if string input,return the tokenized inputs.
-            "Hello,world!"-> [101, 7592, 1010, 2088, 102]
-            if batch input,return {input_ids,attention_mask,token_type_ids}
-            ["Hello,world!","Hello!"] ->
+        -------
+        transformers.BatchEncoding or list[int]
+            A batch encoding for list input, or token ids for string input.
+
+        Examples
+        --------
+        A single string returns token IDs::
+
+            "Hello, world!" -> [101, 7592, 1010, 2088, 102]
+
+        A list of strings returns a batch encoding with fields such as::
+
             {
-                'input_ids': tensor([[  101,  7592,  1010,  2088,   102],...),
-                'attention_mask': tensor([[1, 1, 1, 1, 1],[0,0,1,1,1]])
+                "input_ids": tensor([[101, 7592, 1010, 2088, 102], ...]),
+                "attention_mask": tensor([[1, 1, 1, 1, 1], [0, 0, 1, 1, 1]])
             }
         """
         if isinstance(input, list):

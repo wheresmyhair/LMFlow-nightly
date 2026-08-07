@@ -7,13 +7,12 @@ from torch.optim.optimizer import Optimizer
 
 
 class AdaBound(Optimizer):
-    r"""Implements AdaBound algorithm.
+    """Implement the AdaBound optimization algorithm.
 
-    It has been proposed in `Adaptive Gradient Methods with Dynamic Bound of
-    Learning Rate
-    https://arxiv.org/abs/1902.09843
-    Note:
-        Reference code: https://github.com/Luolc/AdaBound
+    See "Adaptive Gradient Methods with Dynamic Bound of Learning Rate":
+    https://arxiv.org/abs/1902.09843.
+
+    Reference implementation: https://github.com/Luolc/AdaBound.
     """
 
     def __init__(

@@ -174,6 +174,7 @@ class CustomAutoVision2SeqModel(Blip2ForConditionalGeneration, BaseModel):
     def load_prompt_cache(self, path):
         """
         Load prompt embedding and id.
+
         Args:
             path: The path to load the prompt embedding and id.
 
@@ -202,6 +203,7 @@ class CustomAutoVision2SeqModel(Blip2ForConditionalGeneration, BaseModel):
         image_token_indexes: Optional[list] = None,
         one_sample_multiple_images: bool = False,
     ) -> Union[tuple, CausalLMOutputWithPast]:
+        """Run a multimodal forward pass through the vision and language models."""
         if not image_token_indexes:
             image_token_indexes = [0]
 

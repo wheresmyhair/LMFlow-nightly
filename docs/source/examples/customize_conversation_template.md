@@ -5,7 +5,7 @@
 
 We provide the flexibility to customize the conversation template. You can customize your own conversation template by following the steps below:
 
-### 1. Decompose your conversations
+## 1. Decompose your conversations
 Say you want to make the conversations between user and assistant look like:  
 
 ```
@@ -32,7 +32,7 @@ It is easy to abstract the format for each message:
 
 Also, we have a bos token at the beginning of the conversation session.
 
-###  2. Choose proper `Formatter`  
+## 2. Choose proper `Formatter`
 Recall the requirements for a conversation dataset:  
 > - `system`: `Optional[string]`. 
 > - `tools`: `Optional[list[string]]`.  
@@ -42,7 +42,7 @@ Recall the requirements for a conversation dataset:
 
 System message, user message, and assistant message are strings thus we can use `StringFormatter` for them.
 
-### 3. Build the template
+## 3. Build the template
 All preset templates are located at `src/lmflow/utils/conversation_template`.
 
 Within the template file, define your own template like:
@@ -89,7 +89,7 @@ YOUR_TEMPLATE = ConversationTemplate(
 
 Feel free to create your own template by inheriting the `ConversationTemplate` class. Llama-2 v.s. llama-3 would be a good examples to refer to.
 
-### 4. Register your template
+## 4. Register your template
 After defining your own template, you need to register it in the `src/lmflow/utils/conversation_template/__init__.py` file. 
 
 ```python
@@ -103,7 +103,7 @@ PRESET_TEMPLATES = {
 }
 ```
 
-### 5. Use your template
+## 5. Use your template
 You are all set! Specify the template name in, for example, your finetune script:
 
 ```bash

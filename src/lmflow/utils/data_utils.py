@@ -17,7 +17,7 @@ def set_random_seed(seed: int):
     Set the random seed for `random`, `numpy`, `torch`, `torch.cuda`.
 
     Parameters
-    ------------
+    ----------
     seed : int
         The default seed.
 
@@ -34,17 +34,17 @@ def load_data(file_name: str):
     Load data with file name.
 
     Parameters
-    ------------
-    file_name : str.
+    ----------
+    file_name : str
         The dataset file name.
 
     Returns
-    ------------
-    inputs : list.
+    -------
+    inputs : list
         The input texts of the dataset.
-    outputs : list.
+    outputs : list
         The output texts file datasets.
-    len : int.
+    length : int
         The length of the dataset.
     """
     inputs = []
@@ -68,17 +68,17 @@ def batchlize(examples: list, batch_size: int, random_shuffle: bool):
     Convert examples to a dataloader.
 
     Parameters
-    ------------
-    examples : list.
+    ----------
+    examples : list
         Data list.
-    batch_size : int.
-
+    batch_size : int
+        Number of examples in each batch.
     random_shuffle : bool
         If true, the dataloader shuffle the training data.
 
     Returns
-    ------------
-    dataloader:
+    -------
+    list
         Dataloader with batch generator.
     """
     size = 0
@@ -152,22 +152,21 @@ def check_dataset_instances_key_fast(file_path: str, instances_key: str, max_lin
     return False
 
 
-def answer_extraction(response, answer_type=None):  # use this funtion to extract answers from generated text
+def answer_extraction(response, answer_type=None):  # use this function to extract answers from generated text
     """
-    Use this funtion to extract answers from generated text
+    Extract answers from generated text.
 
     Parameters
-    ------------
-    args :
-        Arguments.
+    ----------
     response : str
         plain string response.
-
+    answer_type : str, optional
+        Type of answer to extract.
 
     Returns
-    ------------
-    answer:
-        Decoded answer (such as A, B, C, D, E for mutiple-choice QA).
+    -------
+    str
+        Decoded answer (such as A, B, C, D, E for multiple-choice QA).
     """
 
     # temp = response["generated_text"]
@@ -286,10 +285,14 @@ def process_image_flag(text, image_flag="<ImageHere>"):
 
 
 class VLLMInferenceResultWithInput(TypedDict):
+    """Structured vLLM inference result with its original input."""
+
     input: str
     output: Union[list[str], list[list[int]]]
 
 
 class RewardModelInferenceResultWithInput(TypedDict):
+    """Structured reward-model inference result with its original input."""
+
     input: str
     output: list[dict[str, Union[str, float]]]  # [{"score": 0.5, "text": "output text"}]

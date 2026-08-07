@@ -855,6 +855,8 @@ class InferencerArguments:
     Define a class InferencerArguments using the dataclass decorator. The class contains several optional
     parameters that can be used to configure a inferencer.
 
+    Parameters
+    ----------
     local_rank : str
         For distributed training: local_rank
     random_seed : int, default = 1

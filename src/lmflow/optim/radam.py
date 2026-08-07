@@ -11,7 +11,7 @@ class RAdam(Optimizer):
     r"""Implements RAdam optimization algorithm.
 
     Note:
-        Deprecated, please use version provided by PyTorch_.
+        Deprecated; use the version provided by ``torch.optim``.
 
     It has been proposed in `On the Variance of the Adaptive Learning
     Rate and Beyond`.

@@ -8,6 +8,8 @@ We provide several examples to show how to use our package in your problem.
 :maxdepth: 3
 
 DATASETS
+supported_conversation_template
+customize_conversation_template
 ```
 
 ```{toctree}
@@ -24,6 +26,7 @@ For SFT,
 :maxdepth: 3
 
 finetuning
+medical_finetune
 ```
 
 
@@ -53,5 +56,4 @@ Refer to [examples](https://github.com/OptimalScale/LMFlow/blob/main/examples).
 
 TASK_GUIDE
 ```
-
 

@@ -29,15 +29,17 @@ def get_paired_dataset(
 ) -> Dataset:
     """Load dataset and convert it to the necessary format.
 
-    The dataset is converted to a dictionary with the following structure:
-    {
-        'prompt': list[str],
-        'chosen': list[str],
-        'rejected': list[str],
-    }
+    The returned dataset uses the following structure::
 
-    Prompts are structured as follows:
-      "Question: " + <prompt> + "\n\nAnswer: "
+        {
+            "prompt": list[str],
+            "chosen": list[str],
+            "rejected": list[str]
+        }
+
+    Each prompt is formatted as::
+
+        "Question: " + prompt + "\n\nAnswer: "
     """
     data_path = Path(data_root) / data_dir
     data_files = [x.absolute().as_posix() for x in data_path.glob("*.json")]

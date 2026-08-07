@@ -136,15 +136,21 @@ def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX
 
 
 def preprocess_llama_from_llava_plain(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False):
-    """
-    This function just add the image in the front of text.
-    And don't add any prompt.
-    Args:
-        sources: The input data with text and image.
-        tokenizer: The tokenizer to process text.
-        has_image: Whether the input data has image.
-    Returns:
-        The input_ids and labels for the model.
+    """Preprocess plain LLaVA samples without adding a prompt.
+
+    Parameters
+    ----------
+    sources
+        Input samples containing text and image placeholders.
+    tokenizer : transformers.PreTrainedTokenizer
+        Tokenizer used to encode text.
+    has_image : bool
+        Whether the samples contain images.
+
+    Returns
+    -------
+    dict
+        Model ``input_ids`` and ``labels``.
     """
     conversations = []
     for source in sources:
@@ -164,15 +170,21 @@ def preprocess_llama_from_llava_plain(sources, tokenizer: transformers.PreTraine
 
 
 def preprocess_llama_from_llava_v1(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False):
-    """
-    This function add the prompt and then put the image after the prompt.
-    So it needs additional code to generate the target label.
-    Args:
-        sources: The input data with text and image.
-        tokenizer: The tokenizer to process text.
-        has_image: Whether the input data has image.
-    Returns:
-        The input_ids and labels for the model.
+    """Preprocess LLaVA v1 samples and generate target labels.
+
+    Parameters
+    ----------
+    sources
+        Input samples containing text and image placeholders.
+    tokenizer : transformers.PreTrainedTokenizer
+        Tokenizer used to encode text.
+    has_image : bool
+        Whether the samples contain images.
+
+    Returns
+    -------
+    dict
+        Model ``input_ids`` and ``labels``.
     """
 
     conv = conversation_lib.default_conversation.copy()

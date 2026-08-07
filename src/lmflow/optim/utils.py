@@ -1,10 +1,10 @@
 from typing import Any, Optional
 
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, TrainingArguments
 from transformers.utils import is_sagemaker_mp_enabled
 
 import lmflow.optim.optimizers as optim
-from lmflow.args import OptimizerNames, TrainingArguments
+from lmflow.args import OptimizerNames
 
 
 def create_customized_optimizer(base_trainer_class, model_args):

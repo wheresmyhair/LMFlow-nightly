@@ -21,28 +21,26 @@ class TemplateComponent:
     Parameters
     ----------
     type : Literal['token', 'token_id', 'string', 'tools']
-        - Type of the component.
+        Type of the component.
 
-        - When the component is a token or a string, the content should be `string`.
+        When the component is a token or a string, the content should be `string`.
         The difference between the two is that token will be converted to token ids
         by the tokenizer.convert_tokens_to_ids() method, while string will be directly
         encoded by the tokenizer.encode() method. Specially, since the bos token and eos
         token are frequently used across different templates, we provide the convenience
         to use `'bos_token'` and `'eos_token'` to represent the actual bos and eos tokens when
-        `type` of the `TemplateComponent` is `token`. For example:
+        `type` of the `TemplateComponent` is `token`. For example::
 
-        ```python
-        TemplateComponent(type='token', content='bos_token')
-        ```
+            TemplateComponent(type='token', content='bos_token')
 
         After encoding, the content will be replaced by the actual token id of the bos token.
         Please do remember that if you set the `type` to `string`, the tokenizer will try to
         encode the string 'bos_token' instead of providing the actual bos token.
 
-        - When the component is token_id, the content should be `int` or `list[int]`, and
+        When the component is token_id, the content should be `int` or `list[int]`, and
         will be directly appended to the encoded token ids.
 
-        - Tools are not supported yet.
+        Tools are not supported yet.
 
     content : Union[str, int, list[str], list[int]]
         Content of the component.
@@ -189,24 +187,23 @@ class ConversationTemplate:
     ) -> Sequence[tuple[list[int], list[int]]]:
         r"""
         Messages here should be guaranteed to be in pairs, with the first message being the user message and the second message being the system message.
-        Data example:
-        ```json
-        {
-            "conversation_id": 2,
-            "system": "sysinfo1",
-            "tools": ["tool_1_desc"],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "hi"
-                },
-                {
-                    "role": "assistant",
-                    "content": "Hello!"
-                }
-            ]
-        }
-        ```
+        Data example::
+
+            {
+                "conversation_id": 2,
+                "system": "sysinfo1",
+                "tools": ["tool_1_desc"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hi"
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Hello!"
+                    }
+                ]
+            }
         """
         assert isinstance(messages, list), "Messages must be a list."
 
@@ -414,24 +411,23 @@ class ConversationTemplateForTool(ConversationTemplate):
     ) -> Sequence[tuple[list[int], list[int]]]:
         r"""
         Messages here should be guaranteed to be in pairs, with the first message being the user message and the second message being the system message.
-        Data example:
-        ```json
-        {
-            "conversation_id": 2,
-            "system": "sysinfo1",
-            "tools": ["tool_1_desc"],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "hi"
-                },
-                {
-                    "role": "assistant",
-                    "content": "Hello!"
-                }
-            ]
-        }
-        ```
+        Data example::
+
+            {
+                "conversation_id": 2,
+                "system": "sysinfo1",
+                "tools": ["tool_1_desc"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hi"
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Hello!"
+                    }
+                ]
+            }
         """
         assert isinstance(messages, list), "Messages must be a list."
 
