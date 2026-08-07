@@ -15,18 +15,30 @@ dependency. The generated lock files remain installable with standard pip.
 
 ## Create environments
 
-From the repository root:
+Install the uv version recorded in `UV_VERSION`, then run one of the following
+profiles from the repository root.
+
+Training:
 
 ```bash
-scripts/agentic/bootstrap_env.sh train
-scripts/agentic/bootstrap_env.sh rollout
+uv venv --python 3.12 .venvs/agentic-train
+uv pip sync --python .venvs/agentic-train/bin/python --require-hashes \
+  requirements/agentic/lock/train-py312-cu130-linux-x86_64.txt
+uv pip install --python .venvs/agentic-train/bin/python --no-deps -e .
 ```
 
-The default locations are `.venvs/agentic-train` and
-`.venvs/agentic-rollout`. Override them with `--env-dir`.
-Bootstrap-created environments carry a profile ownership marker; the script
-refuses to synchronize an unrelated existing virtual environment because sync
-removes packages that are absent from the selected lock.
+Rollout:
+
+```bash
+uv venv --python 3.12 .venvs/agentic-rollout
+uv pip sync --python .venvs/agentic-rollout/bin/python --require-hashes \
+  requirements/agentic/lock/rollout-vllm-py312-cu130-linux-x86_64.txt
+uv pip install --python .venvs/agentic-rollout/bin/python --no-deps -e .
+```
+
+`uv pip sync` removes packages that are absent from the selected lock. Use a
+dedicated environment path for each profile; do not synchronize an unrelated
+existing environment.
 
 To use pip instead of uv after creating a Python 3.12 virtual environment:
 
@@ -38,13 +50,10 @@ python -m pip install --no-deps -e .
 
 ## Refresh locks
 
-```bash
-scripts/agentic/lock_envs.sh
-```
-
-Routine regeneration preserves existing pins. Use
-`scripts/agentic/lock_envs.sh --upgrade` only for a coordinated dependency
-upgrade and rerun the complete train/rollout compatibility matrix.
+Lock regeneration is a coordinated maintainer operation. Each generated lock
+records its exact `uv pip compile` command in the file header. Run that command
+with the uv version from `UV_VERSION`, review the complete dependency diff, and
+rerun the train/rollout compatibility matrix before committing an update.
 
 `bitsandbytes`, `flash-attn`, `cpm_kernels`, and vLLM are deliberately absent
 from the base training profile. Quantization and optional kernels require
