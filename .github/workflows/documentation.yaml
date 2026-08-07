@@ -35,7 +35,10 @@ jobs:
       - name: Check documentation links
         run: python .github/scripts/check_doc_links.py _build/sphinx-warnings.log
       - name: Upload documentation artifact
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: >-
+          github.repository == 'OptimalScale/LMFlow' &&
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: documentation-html
@@ -45,7 +48,10 @@ jobs:
 
   deploy:
     name: Deploy documentation
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'OptimalScale/LMFlow' &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
