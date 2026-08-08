@@ -1,0 +1,13 @@
+{
+  "title": "Establish the Nightly Git and release governance baseline",
+  "module": "ci",
+  "kind": "maintenance",
+  "upstream": "private",
+  "summary": "Define the long-lived branch roles, modular export workflow, pull-request review contract, and machine-validated change fragments used to assemble Nightly What's New documents.",
+  "review": [
+    "Branch ownership and the one-way boundary between product and private tooling",
+    "Change-fragment schema and deterministic module grouping",
+    "Upstream export status remains explicit for every significant change"
+  ],
+  "breaking": false
+}
