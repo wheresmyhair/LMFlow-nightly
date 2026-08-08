@@ -52,7 +52,7 @@ jobs:
           python-version: "3.9"
           cache: pip
           cache-dependency-path: |
-            requirements.txt
+            requirements/base.txt
             setup.py
       - name: Install CPU-only PyTorch
         run: >-

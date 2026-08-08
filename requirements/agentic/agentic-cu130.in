@@ -1,0 +1,21 @@
+# LMFlow-Agent training and rollout environment.
+# Python 3.12 / Linux x86_64 / CUDA 13.0.
+# LMFlow itself is installed editable with --no-deps after synchronization.
+accelerate==1.14.0
+datasets==5.0.1
+einops==0.8.2
+evaluate==0.4.6
+numpy==2.3.5
+packaging==26.3
+peft==0.20.0
+pyarrow==25.0.0
+pydantic==2.13.4
+safetensors==0.8.0
+sentencepiece==0.2.2
+tensordict==0.13.0
+tokenizers==0.22.2
+torch==2.11.0
+transformers==5.14.1
+trl==1.9.2
+vllm==0.25.1
+wandb==0.28.1
