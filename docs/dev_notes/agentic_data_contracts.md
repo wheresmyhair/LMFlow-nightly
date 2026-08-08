@@ -32,12 +32,15 @@ The first training loop uses these `DataProto` fields:
 | `batch` | `attention_mask` | Tokens visible to the model. |
 | `batch` | `loss_mask` | Zero excludes a token from the objective; positive values select or weight it. |
 | `batch` | `rewards` | Sequence-level rollout rewards. |
+| `batch` | `advantages` | Sequence-level or token-level algorithm advantages. |
+| `batch` | `old_log_probs` | Optional rollout-policy log-probs aligned with `input_ids`. |
 | `non_tensor_batch` | `tasks` | Normalized `TaskSpec` objects before agent execution. |
 | `non_tensor_batch` | `task_ids` | Source task identity for every row. |
 | `non_tensor_batch` | `group_ids` | Rollout group identity for algorithms such as GRPO. |
 
-Recipes add their own tensors, such as `old_log_probs`, `advantages`, returns,
-or reference-policy outputs, and validate only the fields they consume.
+Recipes populate algorithm fields such as `advantages` and `old_log_probs`,
+may add returns or reference-policy outputs, and validate only the fields they
+consume.
 Model, tokenizer, scaffold, and policy revisions can live in `meta_info` when
 they are constant for the whole batch, or in `non_tensor_batch` when they vary
 by row.
@@ -46,3 +49,10 @@ by row.
 not impose a second schema version, recursively validate metadata, or require
 `loss_mask` to be binary. Persistent datasets and remote transports define
 their own versioned manifests at those external boundaries.
+
+For causal language-model updates, tensors aligned with `input_ids` use shape
+`[batch, sequence]`. Column zero of `old_log_probs` is zero because the first
+token has no preceding model logit, and `loss_mask[:, 0]` must also be zero.
+Logits at column `t` score the target token at `input_ids[:, t + 1]`; prompt,
+environment, and padding tokens remain present for context while their
+`loss_mask` entries stay zero.
