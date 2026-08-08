@@ -1,32 +1,15 @@
 ## Summary
 
-<!-- Describe the outcome and why it belongs in this target branch. -->
+<!-- Describe what changed and the outcome. -->
 
-## Module
+## Why
 
-- [ ] Core
-- [ ] Data / protocol
-- [ ] Agentic
-- [ ] CI/CD
-- [ ] Documentation
-- [ ] Packaging / environment
-- [ ] Private tooling
-
-## Change fragment
-
-- [ ] Added `.changes/<module>/<slug>.json` for a significant change.
-- [ ] No fragment is needed; explanation:
-
-## Upstream disposition
-
-- [ ] Candidate for modular upstream export
-- [ ] Intentionally private
-- [ ] Blocked pending follow-up or a decision
+<!-- Explain the problem or motivation. -->
 
 ## Validation
 
 <!-- List exact tests, checks, and environments. -->
 
-## Review focus
+## Compatibility and risk
 
-<!-- Call out contracts, compatibility, risk, and module boundaries. -->
+<!-- Note compatibility impact, migration needs, or meaningful risks. Omit if none. -->
