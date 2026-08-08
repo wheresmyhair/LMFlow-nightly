@@ -760,43 +760,38 @@ class DataProto:
         self.non_tensor_batch = padded_dp.non_tensor_batch
 
     def chunk(self, chunks: int) -> list["DataProto"]:
-        """Split the batch among dim=0 into chunks. The meta_info is passed to each DataProto after split.
+        """Split the batch along dim=0 into a fixed number of chunks.
+
+        Samples remain in order and are distributed as evenly as possible. When the
+        batch size is not divisible by ``chunks``, the first chunks contain one more
+        sample. The same boundaries are used for tensor and non-tensor data, and
+        ``meta_info`` is passed to every chunk.
 
         Args:
-            chunks (int): the number of chunks to split on dim=0
+            chunks (int): the number of chunks to split on dim=0. For a non-empty
+                DataProto, this cannot exceed the batch size.
 
         Returns:
             List[DataProto]: a list of DataProto after splitting
         """
-        if not self.is_padding_enabled():
-            assert len(self) % chunks == 0, (
-                f"only support equal chunk. Got size of DataProto {len(self)} and chunk {chunks}."
-            )
+        if isinstance(chunks, bool) or not isinstance(chunks, (int, np.integer)):
+            raise TypeError(f"chunks must be an integer, got {type(chunks).__name__}")
 
-        bsz_in_batch = None
-        if self.batch is not None:
-            batch_lst = self.batch.chunk(chunks=chunks, dim=0)
-            bsz_in_batch = np.array([batch.batch_size[0] for batch in batch_lst])
-            chunk_indices = np.cumsum(bsz_in_batch)[:-1]
-        else:
-            batch_lst = [None for _ in range(chunks)]
+        chunks = int(chunks)
+        if chunks <= 0:
+            raise ValueError(f"chunks must be greater than zero, got {chunks}")
 
-        non_tensor_batch_lst = [{} for _ in range(chunks)]
-        for key, val in self.non_tensor_batch.items():
-            assert isinstance(val, np.ndarray)
-            if bsz_in_batch is not None:
-                non_tensor_lst = np.array_split(val, chunk_indices.tolist())
-            else:
-                non_tensor_lst = np.array_split(val, chunks)
-            assert len(non_tensor_lst) == chunks
-            for i in range(chunks):
-                non_tensor_batch_lst[i][key] = non_tensor_lst[i]
+        data_size = len(self)
+        if data_size > 0 and chunks > data_size:
+            raise ValueError(f"chunks ({chunks}) cannot exceed DataProto size ({data_size})")
 
+        base_size, remainder = divmod(data_size, chunks)
         output = []
-        for i in range(chunks):
-            output.append(
-                type(self)(batch=batch_lst[i], non_tensor_batch=non_tensor_batch_lst[i], meta_info=self.meta_info)
-            )
+        start = 0
+        for index in range(chunks):
+            end = start + base_size + (index < remainder)
+            output.append(self[start:end])
+            start = end
 
         return output
 
