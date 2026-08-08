@@ -1,5 +1,6 @@
 """Differential checks against the locked TRL GRPO implementation."""
 
+import copy
 from collections import defaultdict
 from importlib.metadata import PackageNotFoundError, version
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 import torch
 
 from lmflow.agentic.algorithms import compute_group_advantages, grpo_policy_loss
+from lmflow.agentic.policy import causal_token_log_probs, grpo_loss_from_model
 from lmflow.utils.protocol import DataProto
 
 pytestmark = pytest.mark.optional_backend
@@ -24,9 +26,9 @@ def _load_trl_reference():
         pytest.skip(f"requires trl=={_TRL_VERSION}, found {installed_version}")
 
     from trl.trainer.grpo_trainer import GRPOTrainer
-    from trl.trainer.utils import nanstd
+    from trl.trainer.utils import nanstd, selective_log_softmax
 
-    return GRPOTrainer, nanstd
+    return GRPOTrainer, nanstd, selective_log_softmax
 
 
 class _SingleProcessAccelerator:
@@ -48,7 +50,7 @@ class _SingleProcessAccelerator:
 
 
 def _trl_grpo_loss(current_log_probs, old_log_probs, advantages, loss_mask):
-    grpo_trainer, _ = _load_trl_reference()
+    grpo_trainer, _, _ = _load_trl_reference()
     trainer = object.__new__(grpo_trainer)
     model = SimpleNamespace(training=True)
     trainer.model = model
@@ -86,7 +88,7 @@ def _trl_grpo_loss(current_log_probs, old_log_probs, advantages, loss_mask):
 
 
 def test_group_advantages_match_trl_reference():
-    _, trl_nanstd = _load_trl_reference()
+    _, trl_nanstd, _ = _load_trl_reference()
     rewards = torch.tensor([1.0, 3.0, 2.0, 4.0])
     data = DataProto.from_dict(
         tensors={"rewards": rewards},
@@ -100,6 +102,19 @@ def test_group_advantages_match_trl_reference():
     standard_deviations = trl_nanstd(grouped_rewards, dim=1).repeat_interleave(2)
     expected = (rewards - means) / (standard_deviations + 1e-4)
     torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_causal_token_log_probs_match_trl_reference():
+    _, _, trl_selective_log_softmax = _load_trl_reference()
+    torch.manual_seed(5)
+    logits = torch.randn((2, 4, 7), dtype=torch.float64)
+    input_ids = torch.tensor([[1, 2, 3, 4], [1, 5, 6, 2]])
+
+    actual = causal_token_log_probs(logits, input_ids)
+    expected = trl_selective_log_softmax(logits[:, :-1], input_ids[:, 1:])
+
+    torch.testing.assert_close(actual[:, 1:], expected, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(actual[:, 0], torch.zeros_like(actual[:, 0]))
 
 
 def test_policy_loss_gradient_and_optimizer_delta_match_trl():
@@ -136,3 +151,67 @@ def test_policy_loss_gradient_and_optimizer_delta_match_trl():
     lmflow_optimizer.step()
     trl_optimizer.step()
     torch.testing.assert_close(lmflow_log_probs, trl_log_probs, rtol=1e-6, atol=1e-6)
+
+
+class _TinyCausalLM(torch.nn.Module):
+    def __init__(self, vocabulary_size=7, hidden_size=5, dtype=torch.float64):
+        super().__init__()
+        self.embedding = torch.nn.Embedding(vocabulary_size, hidden_size, dtype=dtype)
+        self.lm_head = torch.nn.Linear(hidden_size, vocabulary_size, bias=False, dtype=dtype)
+
+    def forward(self, input_ids, attention_mask):
+        del attention_mask
+        return SimpleNamespace(logits=self.lm_head(self.embedding(input_ids)))
+
+
+def test_tiny_model_loss_gradients_and_parameter_delta_match_trl():
+    _, _, trl_selective_log_softmax = _load_trl_reference()
+    torch.manual_seed(11)
+    base_model = _TinyCausalLM()
+    lmflow_model = copy.deepcopy(base_model)
+    trl_model = copy.deepcopy(base_model)
+    input_ids = torch.tensor([[1, 2, 3, 4], [1, 5, 6, 2]])
+    attention_mask = torch.ones_like(input_ids)
+    loss_mask = torch.tensor(
+        [[0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0]],
+        dtype=torch.float64,
+    )
+    advantages = torch.tensor([1.0, -1.0], dtype=torch.float64)
+    with torch.no_grad():
+        base_logits = base_model(input_ids=input_ids, attention_mask=attention_mask).logits
+        old_log_probs = causal_token_log_probs(base_logits, input_ids)
+    data = DataProto.from_dict(
+        tensors={
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "loss_mask": loss_mask,
+            "advantages": advantages,
+            "old_log_probs": old_log_probs,
+        }
+    )
+    lmflow_optimizer = torch.optim.SGD(lmflow_model.parameters(), lr=0.1)
+    trl_optimizer = torch.optim.SGD(trl_model.parameters(), lr=0.1)
+
+    lmflow_loss = grpo_loss_from_model(lmflow_model, data)
+    trl_logits = trl_model(input_ids=input_ids, attention_mask=attention_mask).logits
+    trl_log_probs = trl_selective_log_softmax(trl_logits[:, :-1], input_ids[:, 1:])
+    trl_loss = _trl_grpo_loss(
+        trl_log_probs,
+        old_log_probs[:, 1:],
+        advantages,
+        loss_mask[:, 1:],
+    )
+    lmflow_loss.backward()
+    trl_loss.backward()
+
+    torch.testing.assert_close(lmflow_loss.detach(), trl_loss.detach(), rtol=1e-6, atol=1e-6)
+    lmflow_parameters = list(lmflow_model.parameters())
+    trl_parameters = list(trl_model.parameters())
+    assert len(lmflow_parameters) == len(trl_parameters)
+    for lmflow_parameter, trl_parameter in zip(lmflow_parameters, trl_parameters):
+        torch.testing.assert_close(lmflow_parameter.grad, trl_parameter.grad, rtol=1e-6, atol=1e-6)
+
+    lmflow_optimizer.step()
+    trl_optimizer.step()
+    for lmflow_parameter, trl_parameter in zip(lmflow_parameters, trl_parameters):
+        torch.testing.assert_close(lmflow_parameter, trl_parameter, rtol=1e-6, atol=1e-6)
