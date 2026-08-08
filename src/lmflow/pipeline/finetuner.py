@@ -37,6 +37,22 @@ from lmflow.utils.versioning import is_package_version_at_least
 logger = logging.getLogger(__name__)
 
 
+def _filter_samples_without_loss_labels(dataset, split_name: str):
+    """Drop tokenized samples whose labels are fully masked after truncation."""
+    original_size = len(dataset)
+    dataset = dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+    dropped_size = original_size - len(dataset)
+    if dropped_size:
+        logger.warning(
+            "Dropped %d %s samples with no loss-bearing labels after tokenization/truncation.",
+            dropped_size,
+            split_name,
+        )
+    if len(dataset) == 0:
+        raise ValueError(f"No {split_name} samples contain loss-bearing labels after tokenization/truncation.")
+    return dataset
+
+
 class Finetuner(BaseTuner):
     """
     Initializes the `Finetuner` class with given arguments.
@@ -259,7 +275,7 @@ class Finetuner(BaseTuner):
                         model_max_length=model.get_max_length(),
                     )
 
-        train_dataset = lm_dataset.get_backend_dataset()
+        train_dataset = _filter_samples_without_loss_labels(lm_dataset.get_backend_dataset(), "train")
 
         if data_args.calculate_dataset_stats:
             total_tokens = 0
@@ -284,6 +300,8 @@ class Finetuner(BaseTuner):
         else:
             logger.warning(f"Number of train samples: {len(train_dataset)}")
 
+        compute_metrics = None
+        preprocess_logits_for_metrics = None
         if finetuner_args.do_eval:
             eval_dataset_args = deepcopy(data_args)
             eval_dataset_args.dataset_path = finetuner_args.eval_dataset_path
@@ -297,25 +315,30 @@ class Finetuner(BaseTuner):
                         tokenized_dataset,
                         model_max_length=model.get_max_length(),
                     )
-            eval_dataset = lm_dataset.get_backend_dataset()
+            eval_dataset = _filter_samples_without_loss_labels(lm_dataset.get_backend_dataset(), "eval")
+            if data_args.max_eval_samples is not None:
+                max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
+                eval_dataset = eval_dataset.select(range(max_eval_samples))
             logger.info(f"Number of eval samples: {len(eval_dataset)}")
 
-            def preprocess_logits_for_metrics(logits, labels):
-                if isinstance(logits, tuple):
-                    # Depending on the model and config, logits may contain extra tensors,
-                    # like past_key_values, but logits always come first
-                    logits = logits[0]
-                return logits.argmax(dim=-1)
+            if not finetuner_args.prediction_loss_only:
 
-            metric = evaluate.load("accuracy")
+                def preprocess_logits_for_metrics(logits, labels):
+                    if isinstance(logits, tuple):
+                        # Depending on the model and config, logits may contain extra tensors,
+                        # like past_key_values, but logits always come first
+                        logits = logits[0]
+                    return logits.argmax(dim=-1)
 
-            def compute_metrics(eval_preds):
-                preds, labels = eval_preds
-                # preds have the same shape as the labels, after the argmax(-1) has been calculated
-                # by preprocess_logits_for_metrics but we need to shift the labels
-                labels = labels[:, 1:].reshape(-1)
-                preds = preds[:, :-1].reshape(-1)
-                return metric.compute(predictions=preds, references=labels)
+                metric = evaluate.load("accuracy")
+
+                def compute_metrics(eval_preds):
+                    preds, labels = eval_preds
+                    # preds have the same shape as the labels, after the argmax(-1) has been calculated
+                    # by preprocess_logits_for_metrics but we need to shift the labels
+                    labels = labels[:, 1:].reshape(-1)
+                    preds = preds[:, :-1].reshape(-1)
+                    return metric.compute(predictions=preds, references=labels)
 
         if finetuner_args.do_train:
             if data_args.max_train_samples is not None:
@@ -374,8 +397,8 @@ class Finetuner(BaseTuner):
             "train_dataset": train_dataset if training_args.do_train else None,
             "eval_dataset": eval_dataset if training_args.do_eval else None,
             "data_collator": data_collator,
-            "compute_metrics": compute_metrics if training_args.do_eval else None,
-            "preprocess_logits_for_metrics": preprocess_logits_for_metrics if training_args.do_eval else None,
+            "compute_metrics": compute_metrics,
+            "preprocess_logits_for_metrics": preprocess_logits_for_metrics,
             "callbacks": trainer_callbacks,
         }
         if is_package_version_at_least("transformers", "4.46.0"):
