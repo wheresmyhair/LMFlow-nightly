@@ -37,6 +37,7 @@ The first training loop uses these `DataProto` fields:
 | `non_tensor_batch` | `tasks` | Normalized `TaskSpec` objects before agent execution. |
 | `non_tensor_batch` | `task_ids` | Source task identity for every row. |
 | `non_tensor_batch` | `group_ids` | Rollout group identity for algorithms such as GRPO. |
+| `non_tensor_batch` | `rollout_ids` | Logical rollout request identity used for idempotent group assembly. |
 
 Recipes populate algorithm fields such as `advantages` and `old_log_probs`,
 may add returns or reference-policy outputs, and validate only the fields they
@@ -44,6 +45,11 @@ consume.
 Model, tokenizer, scaffold, and policy revisions can live in `meta_info` when
 they are constant for the whole batch, or in `non_tensor_batch` when they vary
 by row.
+
+The controller-local `RolloutGroupAssembler` additionally requires a
+batch-constant `meta_info["policy_version"]`. Its group and rollout identities
+are attempt-scoped; whole-group retries register new identities so late results
+cannot contaminate a later update.
 
 `DataProto` already checks batch-dimension alignment. The shared runtime does
 not impose a second schema version, recursively validate metadata, or require
