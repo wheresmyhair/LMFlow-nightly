@@ -566,7 +566,13 @@ class DatasetArguments:
         metadata={"help": "Evaluation File Path"},
     )
     train_on_prompt: bool = field(
-        default=False, metadata={"help": "Whether to train on prompt for conversation datasets such as ShareGPT."}
+        default=False,
+        metadata={
+            "help": (
+                "Whether to train on prompt for conversation datasets such as ShareGPT. When false, "
+                "tokenizer/Jinja chat templates must expose assistant generation spans so labels can be masked."
+            )
+        },
     )
     conversation_template: Optional[str] = field(
         default=None,
