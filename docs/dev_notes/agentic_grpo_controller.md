@@ -1,6 +1,6 @@
 # Synchronous GRPO reference controller
 
-`run_synchronous_grpo_step()` closes the Phase 0 in-process reference path:
+`run_synchronous_grpo_step()` provides an in-process reference path:
 
 ```text
 TaskSpec -> rollout requests -> token-native rollouts -> complete groups
@@ -27,5 +27,5 @@ before it updates the policy. A partial synchronous response fails the whole
 step, avoiding latency-based task selection. The timeout rejects results that
 return after the deadline but cannot preempt a blocking Python rollout call.
 Asynchronous scheduling, active cancellation, retries, vLLM lifecycle,
-colocated GPU phase switching, checkpointing, and policy publication remain
-Phase 3 controller responsibilities.
+colocated rollout/train GPU role switching, checkpointing, and policy
+publication remain runtime controller responsibilities.

@@ -51,7 +51,7 @@ batch-constant `meta_info["policy_version"]`. Its group and rollout identities
 are attempt-scoped; whole-group retries register new identities so late results
 cannot contaminate a later update.
 
-The Phase 0 synchronous GRPO controller expands each task into a complete
+The synchronous GRPO reference controller expands each task into a complete
 rollout group. Its request batch carries repeated `tasks`/`task_ids`, local
 integer `group_ids`/`rollout_ids`, and one batch-constant `policy_version`.
 Rollout adapters preserve these identities when replacing task objects with
