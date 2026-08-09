@@ -207,13 +207,35 @@ def test_uses_session_id_when_trajectory_id_is_absent():
     assert conversation["conversation_id"] == "run-123"
 
 
+def test_copied_agent_step_remains_context_only():
+    baseline = atif_trajectory_to_conversation(_atif_trajectory())
+    trajectory = _atif_trajectory()
+    trajectory["steps"][2]["is_copied_context"] = True
+
+    conversation = atif_trajectory_to_conversation(trajectory)
+
+    expected = copy.deepcopy(baseline)
+    expected["messages"][1]["loss"] = False
+    assert conversation == expected
+    assert "loss" not in conversation["messages"][-1]
+
+
+def test_copied_system_and_user_steps_remain_unchanged_context():
+    baseline = atif_trajectory_to_conversation(_atif_trajectory())
+    trajectory = _atif_trajectory()
+    trajectory["steps"][0]["is_copied_context"] = True
+    trajectory["steps"][1]["is_copied_context"] = True
+
+    assert atif_trajectory_to_conversation(trajectory) == baseline
+
+
 @pytest.mark.parametrize(
     ("path", "replacement", "error"),
     [
         (("schema_version",), "ATIF-v1.6", "schema_version"),
         (("continued_trajectory_ref",), "next.json", "continued_trajectory_ref"),
         (("subagent_trajectories",), [_atif_trajectory()], "subagent_trajectories"),
-        (("steps", 2, "is_copied_context"), True, "per-step loss control"),
+        (("steps", 2, "is_copied_context"), "true", "must be a boolean"),
         (("steps", 2, "message"), None, "message must be a string"),
         (("steps", 2, "message"), [{"type": "text", "text": "hello"}], "message must be a string"),
         (("steps", 2, "observation", "results", 0, "source_call_id"), None, "source_call_id"),
@@ -243,14 +265,256 @@ def test_rejects_context_replacement_system_step():
         atif_trajectory_to_conversation(trajectory)
 
 
-def test_rejects_deterministic_agent_dispatch():
+def test_deterministic_agent_dispatch_requires_explicit_visibility():
     trajectory = _atif_trajectory()
     agent_step = trajectory["steps"][2]
     agent_step["llm_call_count"] = 0
     agent_step.pop("reasoning_content")
 
-    with pytest.raises(ValueError, match="llm_call_count must be 1"):
+    with pytest.raises(ValueError, match="requires an explicit deterministic_step_visibility"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            model_visible_tool_names={"bash"},
+        )
+
+
+def test_deterministic_agent_dispatch_requires_explicit_tool_visibility():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step.pop("reasoning_content")
+
+    with pytest.raises(ValueError, match="requires model_visible_tool_names"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility={3: "model_context"},
+        )
+
+
+def test_model_visible_deterministic_dispatch_remains_context_only():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step.pop("reasoning_content")
+
+    conversation = atif_trajectory_to_conversation(
+        trajectory,
+        deterministic_step_visibility={3: "model_context"},
+        model_visible_tool_names={"bash"},
+    )
+
+    deterministic_message = conversation["messages"][1]
+    assert deterministic_message["loss"] is False
+    assert deterministic_message["tool_calls"][0]["id"] == "call-bash-1"
+    assert conversation["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "call-bash-1",
+        "name": "bash",
+        "content": "OBS_TOKEN",
+    }
+    assert conversation["messages"][3] == {"role": "assistant", "content": "FINAL_TOKEN"}
+
+
+def test_orchestration_only_deterministic_dispatch_is_omitted():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step.pop("reasoning_content")
+
+    conversation = atif_trajectory_to_conversation(
+        trajectory,
+        deterministic_step_visibility={3: "orchestration_only"},
+        model_visible_tool_names=set(),
+    )
+
+    assert conversation["tools"] == []
+    assert conversation["messages"] == [
+        {"role": "user", "content": "USER_TOKEN"},
+        {"role": "assistant", "content": "FINAL_TOKEN"},
+    ]
+
+
+def test_orchestration_only_internal_tool_needs_no_model_tool_definition():
+    baseline = atif_trajectory_to_conversation(_atif_trajectory())
+    trajectory = _atif_trajectory()
+    for step in trajectory["steps"][2:]:
+        step["step_id"] += 1
+    trajectory["steps"].insert(
+        2,
+        {
+            "step_id": 3,
+            "source": "agent",
+            "message": "",
+            "llm_call_count": 0,
+            "tool_calls": [
+                {
+                    "tool_call_id": "call-bootstrap-1",
+                    "function_name": "_bootstrap",
+                    "arguments": {"workspace": "/tmp/task"},
+                }
+            ],
+            "observation": {
+                "results": [
+                    {
+                        "source_call_id": "call-bootstrap-1",
+                        "content": "ready",
+                    }
+                ]
+            },
+        },
+    )
+
+    conversation = atif_trajectory_to_conversation(
+        trajectory,
+        deterministic_step_visibility={3: "orchestration_only"},
+        model_visible_tool_names={"bash"},
+    )
+
+    assert conversation == baseline
+
+
+def test_copied_deterministic_dispatch_needs_no_visibility_declaration():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step["is_copied_context"] = True
+    agent_step.pop("reasoning_content")
+
+    conversation = atif_trajectory_to_conversation(
+        trajectory,
+        model_visible_tool_names={"bash"},
+    )
+
+    assert conversation["messages"][1]["loss"] is False
+    assert conversation["messages"][2]["content"] == "OBS_TOKEN"
+
+
+def test_copied_deterministic_dispatch_cannot_be_orchestration_only():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step["is_copied_context"] = True
+    agent_step.pop("reasoning_content")
+
+    with pytest.raises(ValueError, match="conflicts with is_copied_context=true"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility={3: "orchestration_only"},
+            model_visible_tool_names=set(),
+        )
+
+
+def test_deterministic_dispatch_rejects_reasoning_and_metrics():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+
+    with pytest.raises(ValueError, match="reasoning_content must be absent"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility={3: "model_context"},
+            model_visible_tool_names={"bash"},
+        )
+
+    agent_step.pop("reasoning_content")
+    agent_step["metrics"] = {}
+    with pytest.raises(ValueError, match="metrics must be absent"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility={3: "model_context"},
+            model_visible_tool_names={"bash"},
+        )
+
+
+def test_deterministic_dispatch_requires_structured_tool_calls():
+    trajectory = _atif_trajectory()
+    agent_step = trajectory["steps"][2]
+    agent_step["llm_call_count"] = 0
+    agent_step.pop("reasoning_content")
+    agent_step.pop("tool_calls")
+    agent_step.pop("observation")
+
+    with pytest.raises(ValueError, match="tool_calls must not be empty"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility={3: "model_context"},
+            model_visible_tool_names=set(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("llm_call_count", "error"),
+    [
+        (False, "must be a non-negative integer"),
+        (-1, "must be a non-negative integer"),
+        (1.0, "must be a non-negative integer"),
+        ("0", "must be a non-negative integer"),
+        (2, "greater than 1 is not supported"),
+    ],
+)
+def test_rejects_invalid_or_aggregated_llm_call_counts(llm_call_count, error):
+    trajectory = _atif_trajectory()
+    trajectory["steps"][2]["llm_call_count"] = llm_call_count
+
+    with pytest.raises(ValueError, match=error):
         atif_trajectory_to_conversation(trajectory)
+
+
+def test_rejects_untracked_agent_llm_call_count():
+    trajectory = _atif_trajectory()
+    trajectory["steps"][2].pop("llm_call_count")
+
+    with pytest.raises(ValueError, match="must be 0 or 1 for SFT attribution"):
+        atif_trajectory_to_conversation(trajectory)
+
+
+@pytest.mark.parametrize(
+    ("visibility", "error"),
+    [
+        ({3: "observation_only"}, "must be one of"),
+        ({4: "model_context"}, "only valid for source='agent' steps"),
+        ({99: "model_context"}, "references missing step IDs: 99"),
+        ({False: "model_context"}, "step IDs must be positive integers"),
+        ([], "must be a mapping"),
+    ],
+)
+def test_rejects_invalid_deterministic_step_visibility(visibility, error):
+    trajectory = _atif_trajectory()
+
+    with pytest.raises(ValueError, match=error):
+        atif_trajectory_to_conversation(
+            trajectory,
+            deterministic_step_visibility=visibility,
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_visible_tool_names", "error"),
+    [
+        ({"python"}, "references undefined tools: python"),
+        (["bash", "bash"], "duplicates 'bash'"),
+        ("bash", "must be a collection of tool names"),
+        ({}, "must be a collection of tool names"),
+    ],
+)
+def test_rejects_invalid_model_visible_tool_names(model_visible_tool_names, error):
+    trajectory = _atif_trajectory()
+
+    with pytest.raises(ValueError, match=error):
+        atif_trajectory_to_conversation(
+            trajectory,
+            model_visible_tool_names=model_visible_tool_names,
+        )
+
+
+def test_rejects_model_generated_call_to_hidden_tool():
+    trajectory = _atif_trajectory()
+
+    with pytest.raises(ValueError, match="tools not visible to the model: bash"):
+        atif_trajectory_to_conversation(
+            trajectory,
+            model_visible_tool_names=set(),
+        )
 
 
 @pytest.mark.parametrize("tool_definitions", [None, []])
@@ -316,7 +580,7 @@ def test_rejects_empty_agent_steps_and_unknown_safety_fields():
             "llm_call_count": 1,
         }
     ]
-    with pytest.raises(ValueError, match="no trainable agent content"):
+    with pytest.raises(ValueError, match="no assistant content"):
         atif_trajectory_to_conversation(trajectory)
 
     trajectory = _atif_trajectory()
@@ -333,10 +597,59 @@ def test_requires_a_trainable_agent_step():
         atif_trajectory_to_conversation(trajectory)
 
 
+def test_rejects_trajectory_with_only_excluded_agent_steps():
+    trajectory = _atif_trajectory()
+    trajectory["steps"] = trajectory["steps"][:3]
+    trajectory["steps"][2]["is_copied_context"] = True
+
+    with pytest.raises(ValueError, match="no trainable agent steps"):
+        atif_trajectory_to_conversation(trajectory)
+
+
 def test_converted_json_completes_tiny_lora_finetuner_update(tmp_path, monkeypatch):
     block_size = 2048
     torch.manual_seed(17)
-    conversation = atif_trajectory_to_conversation(_atif_trajectory())
+    trajectory = _atif_trajectory()
+    final_step = trajectory["steps"].pop()
+    trajectory["steps"].extend(
+        [
+            {
+                "step_id": 4,
+                "source": "agent",
+                "message": "COPIED_TOKEN",
+                "llm_call_count": 1,
+                "is_copied_context": True,
+            },
+            {
+                "step_id": 5,
+                "source": "agent",
+                "message": "AUTO_MESSAGE_TOKEN",
+                "llm_call_count": 0,
+                "tool_calls": [
+                    {
+                        "tool_call_id": "call-auto-1",
+                        "function_name": "bash",
+                        "arguments": {"command": "printf AUTO_ARG_TOKEN"},
+                    }
+                ],
+                "observation": {
+                    "results": [
+                        {
+                            "source_call_id": "call-auto-1",
+                            "content": "AUTO_OBS_TOKEN",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    final_step["step_id"] = 6
+    trajectory["steps"].append(final_step)
+    conversation = atif_trajectory_to_conversation(
+        trajectory,
+        deterministic_step_visibility={5: "model_context"},
+        model_visible_tool_names={"bash"},
+    )
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     (dataset_dir / "trajectory.json").write_text(
@@ -399,13 +712,25 @@ def test_converted_json_completes_tiny_lora_finetuner_update(tmp_path, monkeypat
 
     inspection_dataset = Dataset(data_args)
     tokenized = model.tokenize(inspection_dataset).get_backend_dataset()[0]
+    rendered_text = tokenizer.decode(tokenized["input_ids"])
     supervised_text = tokenizer.decode([label for label in tokenized["labels"] if label != -100])
+    for context_token in (
+        "COPIED_TOKEN",
+        "AUTO_MESSAGE_TOKEN",
+        "AUTO_ARG_TOKEN",
+        "AUTO_OBS_TOKEN",
+    ):
+        assert context_token in rendered_text
     assert "REASON_TOKEN" in supervised_text
     assert "TARGET_ARG" in supervised_text
     assert "FINAL_TOKEN" in supervised_text
     assert "SYSTEM_TOKEN" not in supervised_text
     assert "USER_TOKEN" not in supervised_text
     assert "OBS_TOKEN" not in supervised_text
+    assert "COPIED_TOKEN" not in supervised_text
+    assert "AUTO_MESSAGE_TOKEN" not in supervised_text
+    assert "AUTO_ARG_TOKEN" not in supervised_text
+    assert "AUTO_OBS_TOKEN" not in supervised_text
 
     trainable_before = {
         name: parameter.detach().clone()
