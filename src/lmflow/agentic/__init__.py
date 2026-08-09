@@ -1,5 +1,6 @@
 """Public interfaces for LMFlow Agentic workflows."""
 
+from lmflow.agentic.atif import atif_trajectory_to_conversation
 from lmflow.agentic.contracts import TaskSpec, build_task_batch
 from lmflow.agentic.grpo_controller import run_synchronous_grpo_step
 from lmflow.agentic.grpo_recipe import run_grpo_step
@@ -10,6 +11,7 @@ __all__ = [
     "RolloutGroupAssembler",
     "TRLPolicyTrainer",
     "TaskSpec",
+    "atif_trajectory_to_conversation",
     "build_task_batch",
     "run_grpo_step",
     "run_synchronous_grpo_step",
