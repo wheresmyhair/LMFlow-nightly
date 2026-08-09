@@ -324,6 +324,14 @@ QWEN_QWQ_TEMPLATE = (
 )
 
 QWEN3_TEMPLATE = (
+    "{%- macro maybe_generation(enabled) -%}"
+    "{%- set body = caller() -%}"
+    "{%- if enabled -%}"
+    "{% generation %}{{- body }}{% endgeneration %}"
+    "{%- else -%}"
+    "{{- body }}"
+    "{%- endif -%}"
+    "{%- endmacro -%}"
     "{%- if tools %}"
     "{{- '<|im_start|>system\\n' }}"
     "{%- if messages[0].role == 'system' %}"
@@ -352,7 +360,7 @@ QWEN3_TEMPLATE = (
     '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}'
     "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
     '{%- elif message.role == "assistant" %}'
-    "{% generation %}"
+    "{%- call maybe_generation(message.loss is not defined or message.loss is none or message.loss) -%}"
     "{%- set content = message.content %}"
     "{%- set reasoning_content = '' %}"
     "{%- if message.reasoning_content is defined and message.reasoning_content is not none %}"
@@ -392,7 +400,7 @@ QWEN3_TEMPLATE = (
     "{%- endfor %}"
     "{%- endif %}"
     "{{- '<|im_end|>\\n' }}"
-    "{% endgeneration %}"
+    "{%- endcall -%}"
     '{%- elif message.role == "tool" %}'
     '{%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}'
     "{{- '<|im_start|>user' }}"
