@@ -11,6 +11,7 @@ from transformers.testing_utils import CaptureLogger
 from lmflow.args import DatasetArguments
 from lmflow.utils.constants import CONVERSATION_ROLE_NAMES
 from lmflow.utils.conversation_template import ConversationTemplate
+from lmflow.utils.conversation_template.qwen import QWEN3_TEMPLATE
 
 logger = logging.getLogger(__name__)
 tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
@@ -77,6 +78,36 @@ def _build_assistant_only_labels(input_ids: list[int], assistant_masks: Optional
         )
 
     return [token_id if mask == 1 else -100 for token_id, mask in zip(input_ids, assistant_masks)]
+
+
+def _validate_message_loss_controls(
+    messages: list[dict],
+    conversation_template: Union[ConversationTemplate, str],
+    train_on_prompt: bool,
+) -> None:
+    """Validate optional assistant-message loss controls before rendering."""
+    has_explicit_control = False
+    for message_index, message in enumerate(messages):
+        loss = message.get("loss")
+        if loss is None:
+            continue
+        if message.get("role") != CONVERSATION_ROLE_NAMES["assistant"]:
+            raise ValueError(
+                f"Message-level loss is only valid for assistant messages; "
+                f"message {message_index} has role {message.get('role')!r}"
+            )
+        if type(loss) is not bool:
+            raise ValueError(
+                f"Message-level loss must be a boolean or null; message {message_index} has {type(loss).__name__}"
+            )
+        has_explicit_control = True
+
+    if not has_explicit_control:
+        return
+    if train_on_prompt:
+        raise ValueError("Message-level loss cannot be combined with train_on_prompt=True")
+    if not isinstance(conversation_template, str) or conversation_template != QWEN3_TEMPLATE:
+        raise ValueError("Message-level loss is currently supported only by the Qwen3 conversation template")
 
 
 def tokenize_function(
@@ -152,6 +183,7 @@ def conversation_tokenize_function(
             messages = examples["messages"][i]
             system = examples.get("system", [None] * num_example)[i]
             tools = examples.get("tools", [None] * num_example)[i]
+            _validate_message_loss_controls(messages, conversation_template, data_args.train_on_prompt)
 
             if isinstance(conversation_template, str):  # jinja template
                 conversation = [{"role": "system", "content": system}] if system is not None else []

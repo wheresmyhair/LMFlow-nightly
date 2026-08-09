@@ -134,6 +134,17 @@ Data types:
   - `role`: `string`. The role of the message. It can be either `user` or `assistant`.
   - `content`: `string`. The content of the message.
 
+When using the `qwen3` conversation template for SFT, assistant messages may
+also include an optional boolean `loss` field. Setting `"loss": false` keeps
+the complete assistant message in the rendered context while masking that
+message from the training labels. `true`, `null`, and an omitted field retain
+the default assistant loss. This field is valid only on assistant messages and
+cannot be combined with `--train_on_prompt true`.
+
+The message-level `loss` flag controls participation of a whole assistant
+message. It is separate from the token-level `DataProto.loss_mask` used by
+Agentic RL training.
+
 > We are working on supporting customized message keys and role names. Please stay tuned.
 
 Tips:

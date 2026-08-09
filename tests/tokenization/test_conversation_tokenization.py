@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from datasets import Dataset as HFDataset
 from tokenizers import Tokenizer
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.models import BPE
@@ -10,7 +11,7 @@ from transformers import PreTrainedTokenizerFast
 from lmflow.args import DatasetArguments
 from lmflow.models.hf_decoder_model import HFDecoderModel
 from lmflow.tokenization.hf_decoder_model import conversation_tokenize_function
-from lmflow.utils.conversation_template.qwen import QWEN3_TEMPLATE
+from lmflow.utils.conversation_template.qwen import QWEN2_TEMPLATE, QWEN3_TEMPLATE
 
 
 class _StaticChatTokenizer:
@@ -77,6 +78,209 @@ def _find_subsequence_spans(sequence, subsequence):
         for start in range(len(sequence) - len(subsequence) + 1)
         if sequence[start : start + len(subsequence)] == subsequence
     ]
+
+
+def _tokenize_qwen(
+    messages,
+    *,
+    tokenizer=None,
+    system=None,
+    tools=None,
+    block_size=2048,
+    train_on_prompt=False,
+):
+    examples = {"messages": [messages]}
+    if system is not None:
+        examples["system"] = [system]
+    if tools is not None:
+        examples["tools"] = [tools]
+    return conversation_tokenize_function(
+        examples=examples,
+        data_args=_data_args(block_size=block_size, train_on_prompt=train_on_prompt),
+        tokenizer=tokenizer or _qwen_test_tokenizer(),
+        column_names=list(examples),
+        conversation_template=QWEN3_TEMPLATE,
+    )
+
+
+def _assert_token_labels(result, tokenizer, token, expected_labels):
+    token_ids = tokenizer.encode(token, add_special_tokens=False)
+    spans = _find_subsequence_spans(result["input_ids"][0], token_ids)
+    assert spans
+    assert all(result["labels"][0][start:end] == expected_labels(token_ids) for start, end in spans)
+
+
+def test_qwen_message_loss_control_preserves_rendered_prompt():
+    tokenizer = _qwen_test_tokenizer()
+    user = {"role": "user", "content": "USER_TOKEN"}
+    assistant = {"role": "assistant", "content": "ASSISTANT_TOKEN"}
+    variants = [
+        [user, assistant],
+        [user, {**assistant, "loss": None}],
+        [user, {**assistant, "loss": True}],
+        [user, {**assistant, "loss": False}],
+    ]
+
+    rendered = [
+        tokenizer.apply_chat_template(messages, chat_template=QWEN3_TEMPLATE, tokenize=False) for messages in variants
+    ]
+
+    assert rendered == [rendered[0]] * len(rendered)
+    assert rendered[0] == (
+        "<|im_start|>user\nUSER_TOKEN<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\nASSISTANT_TOKEN<|im_end|>\n"
+    )
+
+
+def test_qwen_message_loss_control_masks_only_selected_assistant_turn():
+    tokenizer = _qwen_test_tokenizer()
+    messages = [
+        {"role": "user", "content": "FIRST_USER"},
+        {"role": "assistant", "content": "FIRST_ASSISTANT"},
+        {"role": "user", "content": "SECOND_USER"},
+        {"role": "assistant", "content": "SECOND_ASSISTANT"},
+    ]
+    selected_messages = [
+        messages[0],
+        {**messages[1], "loss": False},
+        messages[2],
+        {**messages[3], "loss": True},
+    ]
+    null_messages = [messages[0], {**messages[1], "loss": None}, messages[2], messages[3]]
+
+    baseline = _tokenize_qwen(messages, tokenizer=tokenizer)
+    null_control = _tokenize_qwen(null_messages, tokenizer=tokenizer)
+    selected = _tokenize_qwen(selected_messages, tokenizer=tokenizer)
+
+    assert null_control == baseline
+    assert selected["input_ids"] == baseline["input_ids"]
+    assert selected["attention_mask"] == baseline["attention_mask"]
+    _assert_token_labels(baseline, tokenizer, "FIRST_ASSISTANT", lambda token_ids: token_ids)
+    _assert_token_labels(selected, tokenizer, "FIRST_ASSISTANT", lambda token_ids: [-100] * len(token_ids))
+    _assert_token_labels(selected, tokenizer, "SECOND_ASSISTANT", lambda token_ids: token_ids)
+
+
+def test_qwen_message_loss_control_masks_reasoning_and_tool_call_together():
+    tokenizer = _qwen_test_tokenizer()
+    messages = [
+        {"role": "user", "content": "USER_TOKEN"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "REASON_TOKEN",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": {"path": "ARG_TOKEN"}},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "OBS_TOKEN"},
+        {"role": "assistant", "content": "FINAL_TOKEN"},
+    ]
+    selected_messages = [messages[0], {**messages[1], "loss": False}, messages[2], messages[3]]
+
+    baseline = _tokenize_qwen(messages, tokenizer=tokenizer)
+    selected = _tokenize_qwen(selected_messages, tokenizer=tokenizer)
+
+    assert selected["input_ids"] == baseline["input_ids"]
+    assert selected["attention_mask"] == baseline["attention_mask"]
+    for token in ("REASON_TOKEN", "ARG_TOKEN"):
+        _assert_token_labels(baseline, tokenizer, token, lambda token_ids: token_ids)
+        _assert_token_labels(selected, tokenizer, token, lambda token_ids: [-100] * len(token_ids))
+    _assert_token_labels(selected, tokenizer, "OBS_TOKEN", lambda token_ids: [-100] * len(token_ids))
+    _assert_token_labels(selected, tokenizer, "FINAL_TOKEN", lambda token_ids: token_ids)
+
+
+def test_qwen_message_loss_control_accepts_arrow_filled_nulls():
+    dataset = HFDataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "UNCONTROLLED_USER"},
+                    {"role": "assistant", "content": "UNCONTROLLED_ASSISTANT"},
+                ]
+            },
+            {
+                "messages": [
+                    {"role": "user", "content": "FIRST_USER"},
+                    {"role": "assistant", "content": "FIRST_ASSISTANT", "loss": False},
+                    {"role": "user", "content": "SECOND_USER"},
+                    {"role": "assistant", "content": "SECOND_ASSISTANT", "loss": True},
+                ]
+            },
+        ]
+    )
+    uncontrolled_messages = dataset[0]["messages"]
+    messages = dataset[1]["messages"]
+
+    assert [message.get("loss") for message in uncontrolled_messages] == [None, None]
+    assert [message.get("loss") for message in messages] == [None, False, None, True]
+    tokenizer = _qwen_test_tokenizer()
+    uncontrolled = _tokenize_qwen(uncontrolled_messages, tokenizer=tokenizer)
+    result = _tokenize_qwen(messages, tokenizer=tokenizer)
+    _assert_token_labels(uncontrolled, tokenizer, "UNCONTROLLED_ASSISTANT", lambda token_ids: token_ids)
+    _assert_token_labels(result, tokenizer, "FIRST_ASSISTANT", lambda token_ids: [-100] * len(token_ids))
+    _assert_token_labels(result, tokenizer, "SECOND_ASSISTANT", lambda token_ids: token_ids)
+
+
+@pytest.mark.parametrize(
+    ("messages", "conversation_template", "train_on_prompt", "error"),
+    [
+        (
+            [{"role": "user", "content": "question", "loss": False}],
+            QWEN3_TEMPLATE,
+            False,
+            "only valid for assistant messages",
+        ),
+        (
+            [{"role": "assistant", "content": "answer", "loss": 1}],
+            QWEN3_TEMPLATE,
+            False,
+            "must be a boolean or null",
+        ),
+        (
+            [{"role": "assistant", "content": "answer", "loss": False}],
+            "{% generation %}{{ messages }}{% endgeneration %}",
+            False,
+            "only by the Qwen3 conversation template",
+        ),
+        (
+            [{"role": "assistant", "content": "answer", "loss": False}],
+            QWEN2_TEMPLATE,
+            False,
+            "only by the Qwen3 conversation template",
+        ),
+        (
+            [{"role": "assistant", "content": "answer", "loss": False}],
+            QWEN3_TEMPLATE,
+            True,
+            "cannot be combined with train_on_prompt=True",
+        ),
+    ],
+)
+def test_invalid_message_loss_controls_fail_closed(messages, conversation_template, train_on_prompt, error):
+    examples = {"messages": [messages]}
+    with pytest.raises(ValueError, match=error):
+        conversation_tokenize_function(
+            examples=examples,
+            data_args=_data_args(train_on_prompt=train_on_prompt),
+            tokenizer=_StaticChatTokenizer(assistant_masks=[0, 1, 1]),
+            column_names=list(examples),
+            conversation_template=conversation_template,
+        )
+
+
+def test_all_assistant_turns_can_be_excluded_from_loss():
+    result = _tokenize_qwen(
+        [
+            {"role": "user", "content": "USER_TOKEN"},
+            {"role": "assistant", "content": "ASSISTANT_TOKEN", "loss": False},
+        ],
+        block_size=256,
+    )
+
+    assert set(result["labels"][0]) == {-100}
 
 
 def test_qwen_tool_trajectory_trains_only_assistant_generation_spans():

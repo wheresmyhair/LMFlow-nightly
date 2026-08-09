@@ -174,6 +174,12 @@ CONVERSATION_DATASET_DESCRIPTION = (
         }
     ]
     }
+
+With the qwen3 conversation template for SFT, assistant messages may include an
+optional boolean "loss" field. false keeps the complete message as context but
+masks it from the training labels; true, null, and an omitted field retain the
+default assistant loss. The field is invalid on other roles and cannot be used
+with train_on_prompt=true.
 """
 ).lstrip("\n")
 
