@@ -3,9 +3,11 @@
 import copy
 from importlib.metadata import PackageNotFoundError, version
 
+import numpy as np
 import pytest
 import torch
 
+from lmflow.agentic.grpo_recipe import run_grpo_step
 from lmflow.agentic.policy import causal_token_log_probs, grpo_loss_from_model
 from lmflow.agentic.trl_policy_trainer import TRLPolicyTrainer
 from lmflow.utils.protocol import DataProto
@@ -152,14 +154,26 @@ def test_trl_policy_trainer_updates_only_lora_parameters(tmp_path):
         _make_args(tmp_path),
         peft_config=peft_config,
     )
+    del data.batch["advantages"]
+    data.batch["rewards"] = torch.tensor([1.0, 3.0], dtype=torch.float64)
+    data.non_tensor_batch["group_ids"] = np.asarray(["group", "group"], dtype=object)
     model = adapter.unwrap_model()
     parameters_before = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
 
-    adapter.train_step(data)
+    metrics = run_grpo_step(adapter, data)
 
     trainable_names = {name for name, parameter in model.named_parameters() if parameter.requires_grad}
     assert trainable_names
     assert all("lora_" in name for name in trainable_names)
+    assert metrics["train/tokens"] == 4.0
+    assert metrics["rollout/trajectories"] == 2.0
+    assert metrics["rollout/groups"] == 1.0
+    torch.testing.assert_close(
+        data.batch["advantages"],
+        torch.tensor([-0.7071, 0.7071], dtype=torch.float64),
+        rtol=1e-4,
+        atol=1e-4,
+    )
     assert any(
         not torch.equal(parameter.detach(), parameters_before[name])
         for name, parameter in model.named_parameters()
