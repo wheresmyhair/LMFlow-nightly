@@ -38,7 +38,15 @@ logger = logging.getLogger(__name__)
 
 
 def _filter_samples_without_loss_labels(dataset, split_name: str):
-    """Drop tokenized samples whose labels are fully masked after truncation."""
+    """Drop fully masked samples without materializing streaming datasets."""
+    if isinstance(dataset, datasets.IterableDataset):
+        logger.warning(
+            "Filtering %s samples with no loss-bearing labels lazily; "
+            "the dropped count and empty-split check are unavailable for streaming datasets.",
+            split_name,
+        )
+        return dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+
     original_size = len(dataset)
     dataset = dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
     dropped_size = original_size - len(dataset)
@@ -51,6 +59,48 @@ def _filter_samples_without_loss_labels(dataset, split_name: str):
     if len(dataset) == 0:
         raise ValueError(f"No {split_name} samples contain loss-bearing labels after tokenization/truncation.")
     return dataset
+
+
+def _prepare_dataset_for_loss(dataset, split_name: str, backend: str):
+    """Apply the loss-label filter only to Hugging Face dataset backends."""
+    if backend != "huggingface":
+        logger.warning(
+            "Skipping the loss-label filter for the %s split because backend %r does not expose "
+            "the Hugging Face Dataset filtering contract.",
+            split_name,
+            backend,
+        )
+        return dataset
+    return _filter_samples_without_loss_labels(dataset, split_name)
+
+
+def _limit_dataset_samples(dataset, max_samples):
+    """Take at most ``max_samples`` while preserving streaming behavior."""
+    if max_samples is None:
+        return dataset
+    if isinstance(dataset, datasets.IterableDataset):
+        return dataset.take(max_samples)
+
+    sample_count = min(len(dataset), max_samples)
+    if hasattr(dataset, "select"):
+        return dataset.select(range(sample_count))
+    return torch.utils.data.Subset(dataset, range(sample_count))
+
+
+def _dataset_length(dataset):
+    """Return the dataset length when it is known without consuming it."""
+    try:
+        return len(dataset)
+    except TypeError:
+        return None
+
+
+def _log_dataset_size(dataset, split_name: str, log=logger.warning):
+    sample_count = _dataset_length(dataset)
+    if sample_count is None:
+        log("Number of %s samples: unknown (streaming dataset)", split_name)
+    else:
+        log("Number of %s samples: %d", split_name, sample_count)
 
 
 class Finetuner(BaseTuner):
@@ -275,9 +325,16 @@ class Finetuner(BaseTuner):
                         model_max_length=model.get_max_length(),
                     )
 
-        train_dataset = _filter_samples_without_loss_labels(lm_dataset.get_backend_dataset(), "train")
+        train_dataset = _prepare_dataset_for_loss(
+            lm_dataset.get_backend_dataset(),
+            "train",
+            lm_dataset.backend,
+        )
 
         if data_args.calculate_dataset_stats:
+            train_dataset_size = _dataset_length(train_dataset)
+            if train_dataset_size is None:
+                raise ValueError("calculate_dataset_stats is unavailable for streaming datasets.")
             total_tokens = 0
             total_target_tokens = 0
             pad_token_id = model.get_tokenizer().pad_token_id
@@ -292,13 +349,13 @@ class Finetuner(BaseTuner):
                 "Dataset stats:\n\n"
                 f"Total tokens: {total_tokens}\n"
                 f"Total target tokens: {total_target_tokens}\n"
-                f"Total samples: {len(train_dataset)}\n"
-                f"Average tokens per sample: {total_tokens / len(train_dataset)}\n"
-                f"Average target tokens per sample: {total_target_tokens / len(train_dataset)}\n"
+                f"Total samples: {train_dataset_size}\n"
+                f"Average tokens per sample: {total_tokens / train_dataset_size}\n"
+                f"Average target tokens per sample: {total_target_tokens / train_dataset_size}\n"
             )
             logger.warning("Calculating data stats took %s seconds", time.time() - start_time)
         else:
-            logger.warning(f"Number of train samples: {len(train_dataset)}")
+            _log_dataset_size(train_dataset, "train")
 
         compute_metrics = None
         preprocess_logits_for_metrics = None
@@ -315,11 +372,13 @@ class Finetuner(BaseTuner):
                         tokenized_dataset,
                         model_max_length=model.get_max_length(),
                     )
-            eval_dataset = _filter_samples_without_loss_labels(lm_dataset.get_backend_dataset(), "eval")
-            if data_args.max_eval_samples is not None:
-                max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
-                eval_dataset = eval_dataset.select(range(max_eval_samples))
-            logger.info(f"Number of eval samples: {len(eval_dataset)}")
+            eval_dataset = _prepare_dataset_for_loss(
+                lm_dataset.get_backend_dataset(),
+                "eval",
+                lm_dataset.backend,
+            )
+            eval_dataset = _limit_dataset_samples(eval_dataset, data_args.max_eval_samples)
+            _log_dataset_size(eval_dataset, "eval", logger.info)
 
             if not finetuner_args.prediction_loss_only:
 
@@ -341,9 +400,7 @@ class Finetuner(BaseTuner):
                     return metric.compute(predictions=preds, references=labels)
 
         if finetuner_args.do_train:
-            if data_args.max_train_samples is not None:
-                max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-                train_dataset = train_dataset.select(range(max_train_samples))
+            train_dataset = _limit_dataset_samples(train_dataset, data_args.max_train_samples)
 
         if getattr(finetuner_args, "bf16", False) and not torch.cuda.is_bf16_supported():
             logger.warning(
@@ -433,10 +490,9 @@ class Finetuner(BaseTuner):
                 )
             metrics = train_result.metrics
 
-            max_train_samples = (
-                data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
-            )
-            metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+            train_dataset_size = _dataset_length(train_dataset)
+            if train_dataset_size is not None:
+                metrics["train_samples"] = train_dataset_size
 
             trainer.log_metrics("train", metrics)
             trainer.save_metrics("train", metrics)
