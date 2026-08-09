@@ -13,9 +13,9 @@ from lmflow.pipeline.finetuner import (
 def test_filter_samples_without_loss_labels(caplog):
     dataset = Dataset.from_dict(
         {
-            "input_ids": [[1, 2], [3, 4], [5, 6]],
-            "attention_mask": [[1, 1], [1, 1], [1, 1]],
-            "labels": [[-100, 2], [-100, -100], [5, 6]],
+            "input_ids": [[1, 2], [3, 4], [5, 6], [7, 8]],
+            "attention_mask": [[1, 1], [1, 1], [1, 1], [1, 1]],
+            "labels": [[-100, 2], [-100, -100], [5, 6], [7, -100]],
         }
     )
 
@@ -24,7 +24,20 @@ def test_filter_samples_without_loss_labels(caplog):
 
     assert len(filtered) == 2
     assert filtered["input_ids"] == [[1, 2], [5, 6]]
-    assert "Dropped 1 eval samples" in caplog.text
+    assert "Dropped 2 eval samples" in caplog.text
+
+
+def test_filter_samples_without_loss_labels_ignores_first_label():
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2]],
+            "attention_mask": [[1, 1]],
+            "labels": [[1, -100]],
+        }
+    )
+
+    with pytest.raises(ValueError, match="No train samples contain loss-bearing labels"):
+        _filter_samples_without_loss_labels(dataset, "train")
 
 
 def test_filter_samples_without_loss_labels_rejects_empty_split():
@@ -45,9 +58,9 @@ def test_filter_samples_without_loss_labels_is_lazy_for_streaming(caplog):
 
     def generate_samples():
         for sample in (
-            {"input_ids": [1], "labels": [-100]},
-            {"input_ids": [2], "labels": [2]},
-            {"input_ids": [3], "labels": [-100, 3]},
+            {"input_ids": [1, 10], "labels": [-100, -100]},
+            {"input_ids": [2, 20], "labels": [-100, 2]},
+            {"input_ids": [3, 30], "labels": [-100, 3]},
         ):
             consumed.append(sample["input_ids"][0])
             yield sample
@@ -57,16 +70,30 @@ def test_filter_samples_without_loss_labels_is_lazy_for_streaming(caplog):
         filtered = _filter_samples_without_loss_labels(dataset, "train")
 
     assert consumed == []
-    assert [sample["input_ids"] for sample in filtered] == [[2], [3]]
+    assert [sample["input_ids"] for sample in filtered] == [[2, 20], [3, 30]]
     assert "Filtering train samples" in caplog.text
     assert "lazily" in caplog.text
+
+
+def test_all_masked_stream_cannot_be_rejected_up_front(caplog):
+    def generate_samples():
+        yield {"input_ids": [1, 2], "labels": [-100, -100]}
+        yield {"input_ids": [3, 4], "labels": [3, -100]}
+
+    dataset = IterableDataset.from_generator(generate_samples)
+
+    with caplog.at_level(logging.WARNING):
+        filtered = _filter_samples_without_loss_labels(dataset, "train")
+
+    assert list(filtered) == []
+    assert "empty-split check are unavailable for streaming datasets" in caplog.text
 
 
 def test_streaming_eval_filter_and_max_samples_uses_take():
     def generate_samples():
         for index in range(5):
-            labels = [index] if index % 2 else [-100]
-            yield {"input_ids": [index], "labels": labels}
+            labels = [-100, index] if index % 2 else [-100, -100]
+            yield {"input_ids": [index, index + 10], "labels": labels}
 
     dataset = IterableDataset.from_generator(generate_samples)
 
@@ -74,7 +101,7 @@ def test_streaming_eval_filter_and_max_samples_uses_take():
     limited = _limit_dataset_samples(filtered, 2)
 
     assert isinstance(limited, IterableDataset)
-    assert [sample["input_ids"] for sample in limited] == [[1], [3]]
+    assert [sample["input_ids"] for sample in limited] == [[1, 11], [3, 13]]
 
 
 def test_custom_multi_modal_backend_skips_huggingface_filter():

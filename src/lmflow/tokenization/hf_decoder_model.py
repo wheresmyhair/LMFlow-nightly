@@ -2,7 +2,7 @@
 # Copyright 2024 Statistics and Machine Learning Research Group. All rights reserved.
 
 import logging
-from typing import Union
+from typing import Optional, Union
 
 import transformers
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -52,6 +52,31 @@ def blocking(
                 raise ValueError(f"padding_side should be either 'right' or 'left', got {padding_side}")
 
     return token_dict
+
+
+def _build_assistant_only_labels(input_ids: list[int], assistant_masks: Optional[list[int]]) -> list[int]:
+    if assistant_masks is None:
+        raise RuntimeError(
+            "Tokenizer chat template path requires `assistant_masks` for label masking when "
+            "`train_on_prompt=False`. Use a generation-aware chat template, upgrade the "
+            "transformers/tokenizer support, or use an LMFlow conversation template."
+        )
+
+    if len(assistant_masks) != len(input_ids):
+        raise ValueError(
+            "`assistant_masks` must align with `input_ids`: "
+            f"got {len(assistant_masks)} mask values for {len(input_ids)} token ids"
+        )
+
+    invalid_indices = [index for index, mask in enumerate(assistant_masks) if mask not in (0, 1)]
+    if invalid_indices:
+        preview = invalid_indices[:5]
+        suffix = "..." if len(invalid_indices) > len(preview) else ""
+        raise ValueError(
+            f"`assistant_masks` must contain only 0/1 values; invalid values found at indices {preview}{suffix}"
+        )
+
+    return [token_id if mask == 1 else -100 for token_id, mask in zip(input_ids, assistant_masks)]
 
 
 def tokenize_function(
@@ -140,19 +165,11 @@ def conversation_tokenize_function(
                 )
 
                 if data_args.train_on_prompt:
-                    labels = encoded_conversation["input_ids"]
+                    labels = list(encoded_conversation["input_ids"])
                 else:
-                    assistant_masks = encoded_conversation.get("assistant_masks", None)
-                    if assistant_masks is None:
-                        raise RuntimeError(
-                            "Tokenizer chat template path requires `assistant_masks` for label masking when "
-                            "`train_on_prompt=False`. Please upgrade transformers/tokenizer support, "
-                            "or use an LMFlow conversation template."
-                        )
-                    labels = [
-                        encoded_conversation["input_ids"][index] if mask == 1 else -100
-                        for index, mask in enumerate(assistant_masks)
-                    ]
+                    labels = _build_assistant_only_labels(
+                        encoded_conversation["input_ids"], encoded_conversation.get("assistant_masks")
+                    )
 
                 token_dict["input_ids"][i].extend(encoded_conversation["input_ids"])
                 token_dict["attention_mask"][i].extend(encoded_conversation["attention_mask"])

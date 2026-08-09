@@ -38,17 +38,27 @@ logger = logging.getLogger(__name__)
 
 
 def _filter_samples_without_loss_labels(dataset, split_name: str):
-    """Drop fully masked samples without materializing streaming datasets."""
+    """Drop samples with no targets after the causal-LM label shift.
+
+    Map-style datasets fail when the filtered split is empty. Streaming
+    datasets stay lazy, so their emptiness cannot be checked up front.
+    """
+
+    def has_loss_bearing_labels(sample):
+        # Causal LM logits at position ``i`` predict ``labels[i + 1]``.
+        # A label at position 0 therefore never contributes to the loss.
+        return any(label != -100 for label in sample["labels"][1:])
+
     if isinstance(dataset, datasets.IterableDataset):
         logger.warning(
             "Filtering %s samples with no loss-bearing labels lazily; "
             "the dropped count and empty-split check are unavailable for streaming datasets.",
             split_name,
         )
-        return dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+        return dataset.filter(has_loss_bearing_labels)
 
     original_size = len(dataset)
-    dataset = dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+    dataset = dataset.filter(has_loss_bearing_labels)
     dropped_size = original_size - len(dataset)
     if dropped_size:
         logger.warning(
@@ -344,7 +354,7 @@ class Finetuner(BaseTuner):
             start_time = time.time()
             for datapoint in train_dataset:
                 total_tokens += len([label for label in datapoint["input_ids"] if label != pad_token_id])
-                total_target_tokens += len([label for label in datapoint["labels"] if label != -100])
+                total_target_tokens += len([label for label in datapoint["labels"][1:] if label != -100])
             logger.warning(
                 "Dataset stats:\n\n"
                 f"Total tokens: {total_tokens}\n"
