@@ -1,8 +1,11 @@
 import copy
+from types import SimpleNamespace
 
 import pytest
+from torch.distributed.fsdp import StateDictType
 
 from lmflow.agentic.trl_dpo_trainer import (
+    TRLDPOTrainer,
     _paired_conversation_to_preference,
     _prepare_paired_conversation_dataset,
 )
@@ -176,3 +179,88 @@ def test_rejects_non_paired_conversation_dataset():
 
     with pytest.raises(ValueError, match="paired_conversation"):
         _prepare_paired_conversation_dataset(dataset, "train")
+
+
+class _SaveRecorder:
+    def __init__(self, *, fsdp_enabled, state_dict_type=None, error=None):
+        self.is_fsdp_enabled = fsdp_enabled
+        self.fsdp_plugin = _FSDPPlugin(state_dict_type) if fsdp_enabled else None
+        self.accelerator = SimpleNamespace(state=SimpleNamespace(fsdp_plugin=self.fsdp_plugin))
+        self.error = error
+        self.observed_fsdp_configs = []
+        self.output_dirs = []
+
+    def save_model(self, output_dir):
+        if self.fsdp_plugin is not None:
+            self.observed_fsdp_configs.append(
+                (
+                    self.fsdp_plugin.state_dict_type,
+                    self.fsdp_plugin.state_dict_config,
+                    self.fsdp_plugin.optim_state_dict_config,
+                )
+            )
+        self.output_dirs.append(output_dir)
+        if self.error is not None:
+            raise self.error
+
+
+class _FSDPPlugin:
+    def __init__(self, state_dict_type):
+        self.state_dict_type = state_dict_type
+        self.state_dict_config = "original model state config"
+        self.optim_state_dict_config = "original optimizer state config"
+
+    def set_state_dict_type(self, state_dict_type):
+        self.state_dict_type = state_dict_type
+        self.state_dict_config = "full model state config"
+        self.optim_state_dict_config = "full optimizer state config"
+
+
+def _adapter_with_trainer(trainer):
+    adapter = TRLDPOTrainer.__new__(TRLDPOTrainer)
+    adapter._trainer = trainer
+    return adapter
+
+
+def test_save_model_temporarily_gathers_a_full_fsdp_state_dict():
+    trainer = _SaveRecorder(fsdp_enabled=True, state_dict_type=StateDictType.SHARDED_STATE_DICT)
+
+    _adapter_with_trainer(trainer).save_model("adapter-output")
+
+    assert trainer.output_dirs == ["adapter-output"]
+    assert trainer.observed_fsdp_configs == [
+        (StateDictType.FULL_STATE_DICT, "full model state config", "full optimizer state config")
+    ]
+    assert trainer.fsdp_plugin.state_dict_type == StateDictType.SHARDED_STATE_DICT
+    assert trainer.fsdp_plugin.state_dict_config == "original model state config"
+    assert trainer.fsdp_plugin.optim_state_dict_config == "original optimizer state config"
+
+
+def test_save_model_restores_fsdp_state_dict_type_after_failure():
+    trainer = _SaveRecorder(
+        fsdp_enabled=True,
+        state_dict_type=StateDictType.SHARDED_STATE_DICT,
+        error=RuntimeError("save failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        _adapter_with_trainer(trainer).save_model("adapter-output")
+
+    assert trainer.fsdp_plugin.state_dict_type == StateDictType.SHARDED_STATE_DICT
+    assert trainer.fsdp_plugin.state_dict_config == "original model state config"
+    assert trainer.fsdp_plugin.optim_state_dict_config == "original optimizer state config"
+
+
+@pytest.mark.parametrize("fsdp_enabled", [False, True])
+def test_save_model_keeps_non_sharded_paths_unchanged(fsdp_enabled):
+    trainer = _SaveRecorder(fsdp_enabled=fsdp_enabled, state_dict_type=StateDictType.FULL_STATE_DICT)
+
+    _adapter_with_trainer(trainer).save_model(None)
+
+    assert trainer.output_dirs == [None]
+    expected_configs = (
+        [(StateDictType.FULL_STATE_DICT, "original model state config", "original optimizer state config")]
+        if fsdp_enabled
+        else []
+    )
+    assert trainer.observed_fsdp_configs == expected_configs

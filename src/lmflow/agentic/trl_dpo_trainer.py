@@ -206,7 +206,32 @@ class TRLDPOTrainer:
 
     def save_model(self, output_dir: Optional[str] = None) -> None:
         """Save the policy and processing artifacts through the locked trainer."""
-        self._trainer.save_model(output_dir)
+        trainer = self._trainer
+        fsdp_plugin = getattr(trainer.accelerator.state, "fsdp_plugin", None)
+        state_dict_type = getattr(fsdp_plugin, "state_dict_type", None)
+        needs_full_state_dict = trainer.is_fsdp_enabled and "FULL_STATE_DICT" not in str(state_dict_type)
+
+        if not needs_full_state_dict:
+            trainer.save_model(output_dir)
+            return
+
+        # Transformers only publishes a reloadable model artifact for FSDP
+        # when the plugin requests a full state dict. Accelerate FSDP2 defaults
+        # to a sharded state dict, so switch only for this final model export and
+        # restore the training/checkpoint configuration afterward.
+        from torch.distributed.fsdp import StateDictType
+
+        state_dict_config = fsdp_plugin.state_dict_config
+        optim_state_dict_config = fsdp_plugin.optim_state_dict_config
+        fsdp_plugin.state_dict_config = None
+        fsdp_plugin.optim_state_dict_config = None
+        fsdp_plugin.set_state_dict_type(StateDictType.FULL_STATE_DICT)
+        try:
+            trainer.save_model(output_dir)
+        finally:
+            fsdp_plugin.state_dict_type = state_dict_type
+            fsdp_plugin.state_dict_config = state_dict_config
+            fsdp_plugin.optim_state_dict_config = optim_state_dict_config
 
 
 __all__ = ["TRLDPOTrainer"]
