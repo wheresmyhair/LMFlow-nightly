@@ -145,6 +145,42 @@ The message-level `loss` flag controls participation of a whole assistant
 message. It is separate from the token-level `DataProto.loss_mask` used by
 Agentic RL training.
 
+`lmflow.agentic.atif_trajectory_to_conversation` uses this field when converting
+ATIF v1.7 data for SFT. Agent steps marked `is_copied_context: true` stay in the
+rendered context, while their assistant span receives `loss: false`. This is
+LMFlow's context-preserving interpretation for Qwen3 assistant-only SFT: the
+copied text remains available to later turns but is excluded from the labels.
+
+Every agent step must explicitly set `llm_call_count` to `0` or `1`; a null or
+omitted value means the producer did not track attribution and is rejected. For
+a non-copied agent step with `llm_call_count: 0`, ATIF establishes that no model
+generated the action but does not establish whether the action entered a later
+model prompt. Callers must therefore classify each such `step_id` through the
+converter's `deterministic_step_visibility` argument:
+
+- `model_context` retains the deterministic assistant tool call and observation,
+  with `loss: false` on the assistant message;
+- `orchestration_only` validates and omits the step and its observation;
+- an omitted or invalid classification fails closed.
+
+Whenever a deterministic step is present, callers must also pass the exact set of
+top-level tools shown in the model prompt through `model_visible_tool_names`.
+The converter filters the returned tool definitions to that set and rejects any
+retained tool call that uses a hidden tool. This prevents harness-only tool schemas
+from entering the training prompt. An `orchestration_only` internal call may be
+absent from the model tool definitions because it is omitted from the result, but
+its call shape, unique ID, and observation pairing are still validated. The visible
+tool set applies to the whole converted conversation; per-turn changes in tool
+availability require an exporter-specific prompt-derived conversion.
+
+The deterministic-step subset requires structured tool calls with complete text
+observations and no reasoning or model metrics. The two visibility classifications
+cover steps whose dispatch and observation were both visible, or both absent, in
+the model context. ATIF cannot reconstruct a hidden harness dispatch whose result
+was separately injected into the model prompt; exporters must provide an exact
+prompt-derived conversion for that case. Aggregated multi-call steps remain
+unsupported.
+
 > We are working on supporting customized message keys and role names. Please stay tuned.
 
 Tips:
