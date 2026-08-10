@@ -181,6 +181,32 @@ was separately injected into the model prompt; exporters must provide an exact
 prompt-derived conversion for that case. Aggregated multi-call steps remain
 unsupported.
 
+To convert an ATIF file into an LMFlow conversation dataset, run:
+
+```sh
+python -m lmflow.agentic.convert_atif \
+  --input-path trajectories.jsonl \
+  --output-path data/agentic/train.json
+```
+
+A `.json` input contains exactly one ATIF trajectory object. A `.jsonl` input
+contains one trajectory object per non-blank line. The converter preserves input
+order, rejects duplicate JSON object keys and non-finite numbers, and publishes
+the output only after every trajectory converts successfully. Existing output is
+left unchanged on failure and is replaced only when `--overwrite` is provided.
+This is an atomic visibility guarantee on the output filesystem, not a guarantee
+against sudden storage or power failure.
+
+Keep a source ATIF `.json` file outside the output dataset directory. LMFlow loads
+every `.json` file in that directory as a dataset shard, while `.jsonl` source
+files are not scanned by the dataset loader.
+
+The generic file converter deliberately leaves `llm_call_count: 0` trajectories
+fail closed because their per-step context visibility and exact model-visible tool
+set require exporter-owned evidence. Exporters that have this information should
+call `atif_trajectory_to_conversation` directly with the corresponding visibility
+arguments before assembling the dataset.
+
 > We are working on supporting customized message keys and role names. Please stay tuned.
 
 Tips:
