@@ -7,6 +7,7 @@ from lmflow.agentic.grpo_controller import run_synchronous_grpo_step
 from lmflow.agentic.grpo_recipe import run_grpo_step
 from lmflow.agentic.rollout_groups import RolloutGroupAssembler
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox, SandboxCapabilityError
+from lmflow.agentic.trl_dpo_trainer import TRLDPOTrainer
 from lmflow.agentic.trl_policy_trainer import TRLPolicyTrainer
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "ProcessResult",
     "ProcessSandbox",
     "SandboxCapabilityError",
+    "TRLDPOTrainer",
     "TRLPolicyTrainer",
     "TaskSpec",
     "atif_trajectory_to_conversation",
