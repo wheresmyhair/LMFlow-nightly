@@ -61,7 +61,7 @@ def _filter_samples_without_loss_labels(dataset, split_name: str):
     return dataset
 
 
-def _prepare_dataset_for_loss(dataset, split_name: str, backend: str):
+def _prepare_dataset_for_loss(dataset, split_name: str, backend: str, main_process_first=None):
     """Apply the loss-label filter only to Hugging Face dataset backends."""
     if backend != "huggingface":
         logger.warning(
@@ -71,6 +71,16 @@ def _prepare_dataset_for_loss(dataset, split_name: str, backend: str):
             backend,
         )
         return dataset
+
+    # Hugging Face map-style Dataset.filter writes an Arrow cache file. In a
+    # distributed launch, concurrent ranks can race while replacing that same
+    # fingerprinted cache file. Let global rank zero populate it first, then
+    # allow the remaining ranks to reuse it after the barrier. IterableDataset
+    # filtering is lazy and does not create the cache file, so it must remain
+    # outside this context to avoid serializing only the wrapper construction.
+    if main_process_first is not None and not isinstance(dataset, datasets.IterableDataset):
+        with main_process_first(local=False, desc=f"filtering {split_name} samples with loss labels"):
+            return _filter_samples_without_loss_labels(dataset, split_name)
     return _filter_samples_without_loss_labels(dataset, split_name)
 
 
@@ -329,6 +339,7 @@ class Finetuner(BaseTuner):
             lm_dataset.get_backend_dataset(),
             "train",
             lm_dataset.backend,
+            finetuner_args.main_process_first,
         )
 
         if data_args.calculate_dataset_stats:
@@ -376,6 +387,7 @@ class Finetuner(BaseTuner):
                 lm_dataset.get_backend_dataset(),
                 "eval",
                 lm_dataset.backend,
+                finetuner_args.main_process_first,
             )
             eval_dataset = _limit_dataset_samples(eval_dataset, data_args.max_eval_samples)
             _log_dataset_size(eval_dataset, "eval", logger.info)
