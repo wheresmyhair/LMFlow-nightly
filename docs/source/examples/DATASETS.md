@@ -374,6 +374,14 @@ This type of dataset are commonly used for alignment such as [reward modeling](h
 [Direct Preference Optimization (DPO)](https://arxiv.org/abs/2305.18290), etc. For requirements of the conversations,
 please refer to [conversation data](#conversation).
 
+`TRLDPOTrainer` accepts a strict subset for standard DPO. The chosen and
+rejected conversations must have identical system prompts, tool definitions,
+and messages before their final assistant messages. Only those final assistant
+messages may differ. This explicit boundary ensures that user, tool, and prior
+assistant context remains in the prompt and does not enter the DPO completion
+loss. An assistant `loss: false` flag is allowed in the shared context but is
+invalid on either final completion.
+
 ````{dropdown} A paired conversation dataset
 ```json
 {
