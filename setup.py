@@ -11,11 +11,7 @@ with open(version_path) as f:
 
 req_path = os.path.join(folder, "requirements", "base.txt")
 with open(req_path, encoding="utf-8") as fp:
-    install_requires = [
-        line.strip()
-        for line in fp
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    install_requires = [line.strip() for line in fp if line.strip() and not line.lstrip().startswith("#")]
 
 extra_require = {
     "multimodal": ["Pillow"],
@@ -47,6 +43,11 @@ setup(
     author="The LMFlow Team",
     long_description=readme_contents,
     long_description_content_type="text/markdown",
+    license_files=[
+        "LICENSE",
+        "LICENSES/mini-swe-agent-MIT.txt",
+        "THIRD_PARTY_NOTICES.md",
+    ],
     package_dir={"": "src"},
     packages=find_packages("src"),
     package_data={},

@@ -169,6 +169,7 @@ class ProcessSandbox:
         env: Optional[Mapping[str, str]] = None,
         timeout_seconds: Optional[float] = None,
         limits: Optional[ProcessLimits] = None,
+        merge_stderr: bool = False,
         required_capabilities: Iterable[str] = (),
     ) -> ProcessResult:
         """Execute one argv-only command and clean its process group."""
@@ -184,6 +185,8 @@ class ProcessSandbox:
         run_limits = self.limits if limits is None else limits
         if not isinstance(run_limits, ProcessLimits):
             raise TypeError("limits must be a ProcessLimits instance or None")
+        if not isinstance(merge_stderr, bool):
+            raise TypeError("merge_stderr must be a boolean")
         self.require_capabilities(required_capabilities)
 
         with tempfile.TemporaryDirectory(prefix=".lmflow-sandbox-", dir=self.root) as runtime_dir:
@@ -201,16 +204,19 @@ class ProcessSandbox:
                 env=child_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
                 close_fds=True,
                 start_new_session=True,
             )
             stdout_collector = _BoundedOutputCollector(self.max_output_bytes)
-            stderr_collector = _BoundedOutputCollector(self.max_output_bytes)
             stdout_thread = threading.Thread(target=stdout_collector.drain, args=(process.stdout,), daemon=True)
-            stderr_thread = threading.Thread(target=stderr_collector.drain, args=(process.stderr,), daemon=True)
             stdout_thread.start()
-            stderr_thread.start()
+            stderr_collector = None
+            stderr_thread = None
+            if not merge_stderr:
+                stderr_collector = _BoundedOutputCollector(self.max_output_bytes)
+                stderr_thread = threading.Thread(target=stderr_collector.drain, args=(process.stderr,), daemon=True)
+                stderr_thread.start()
             timed_out = False
             try:
                 process.wait(timeout=float(timeout))
@@ -222,9 +228,13 @@ class ProcessSandbox:
                     process.wait()
             duration_seconds = time.monotonic() - started_at
             stdout_thread.join(timeout=1.0)
-            stderr_thread.join(timeout=1.0)
             stdout, stdout_truncated = stdout_collector.result(drain_completed=not stdout_thread.is_alive())
-            stderr, stderr_truncated = stderr_collector.result(drain_completed=not stderr_thread.is_alive())
+            if stderr_thread is None:
+                stderr = ""
+                stderr_truncated = False
+            else:
+                stderr_thread.join(timeout=1.0)
+                stderr, stderr_truncated = stderr_collector.result(drain_completed=not stderr_thread.is_alive())
 
         return ProcessResult(
             args=command,

@@ -1,1 +1,3 @@
 include requirements/base.txt
+include THIRD_PARTY_NOTICES.md
+include LICENSES/mini-swe-agent-MIT.txt

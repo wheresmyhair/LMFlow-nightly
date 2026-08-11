@@ -3,13 +3,16 @@
 from lmflow.agentic.atif import atif_trajectory_to_conversation
 from lmflow.agentic.atif_io import convert_atif_file_to_conversation_dataset
 from lmflow.agentic.bash_agent import (
+    BashAgentEnvironment,
+    BashAgentFormatError,
     BashAgentModel,
     BashAgentTurn,
-    BashCommandExecutor,
     BashToolCall,
     MinimalBashAgent,
+    MinimalBashAgentConfig,
     MinimalBashAgentError,
     MinimalBashAgentResult,
+    ProcessSandboxBashEnvironment,
     bash_agent_turn_from_openai_message,
     bash_tool_definition,
 )
@@ -23,19 +26,22 @@ from lmflow.agentic.trl_policy_trainer import TRLPolicyTrainer
 from lmflow.agentic.workspace import EpisodeWorkspace, EpisodeWorkspaceError
 
 __all__ = [
+    "BashAgentEnvironment",
+    "BashAgentFormatError",
     "BashAgentModel",
     "BashAgentTurn",
-    "BashCommandExecutor",
     "BashToolCall",
     "RolloutGroupAssembler",
     "EpisodeWorkspace",
     "EpisodeWorkspaceError",
     "MinimalBashAgent",
+    "MinimalBashAgentConfig",
     "MinimalBashAgentError",
     "MinimalBashAgentResult",
     "ProcessLimits",
     "ProcessResult",
     "ProcessSandbox",
+    "ProcessSandboxBashEnvironment",
     "SandboxCapabilityError",
     "TRLDPOTrainer",
     "TRLPolicyTrainer",

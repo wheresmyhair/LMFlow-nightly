@@ -100,6 +100,20 @@ def test_bounds_stdout_and_stderr_without_pipe_backpressure(tmp_path):
     assert result.stderr_truncated is True
 
 
+def test_can_merge_stderr_without_losing_write_order(tmp_path):
+    sandbox = ProcessSandbox(tmp_path)
+
+    result = sandbox.run(
+        ("/bin/sh", "-c", "printf 'first'; printf ' second' >&2; printf ' third'"),
+        merge_stderr=True,
+    )
+
+    assert result.stdout == "first second third"
+    assert result.stderr == ""
+    assert result.stdout_truncated is False
+    assert result.stderr_truncated is False
+
+
 def test_timeout_kills_the_command_process_group(tmp_path):
     sandbox = ProcessSandbox(tmp_path, timeout_seconds=0.2)
     code = (
