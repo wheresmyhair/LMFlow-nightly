@@ -134,10 +134,10 @@ def test_export_patch_is_repeatable_and_preserves_workspace_files(tmp_path):
 
         _git(workspace.path, "reset", "--hard", revision)
         _git(workspace.path, "clean", "-ffdx")
-        _git(workspace.path, "apply", "--check", "-", input_bytes=first_patch.encode("utf-8"))
-        _git(workspace.path, "apply", "-", input_bytes=first_patch.encode("utf-8"))
+        workspace.apply_patch_bytes(first_patch.encode("utf-8"))
         assert (workspace.path / "tracked.txt").read_text(encoding="utf-8") == "updated\n"
         assert (workspace.path / "binary.dat").read_bytes() == b"\x00\x01\xff\x00"
+        assert b"binary.dat" in _git(workspace.path, "diff", "--cached", "--name-only", revision)
 
 
 def test_process_sandbox_changes_can_be_exported_as_episode_patch(tmp_path):
