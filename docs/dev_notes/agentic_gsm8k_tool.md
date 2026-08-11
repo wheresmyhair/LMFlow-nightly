@@ -102,3 +102,98 @@ original row indices in task and trajectory identities.
 This runner is for data construction and evaluation through an OpenAI-compatible
 control plane. It does not provide sampled token IDs or log-probabilities and
 cannot serve as the token-native rollout source for online GRPO.
+
+## Qwen3-8B cold-start SFT
+
+The generated `dataset/` directory is directly consumable by LMFlow's existing
+Finetuner. A single-GPU LoRA run can start with:
+
+```bash
+accelerate launch --config_file configs/accelerate_singlegpu_config.yaml \
+  examples/finetune.py \
+  --model_name_or_path Qwen/Qwen3-8B \
+  --dataset_path gsm8k-tool-run/dataset \
+  --output_dir output_models/qwen3-8b-gsm8k-tool-lora \
+  --conversation_template qwen3 \
+  --train_on_prompt false \
+  --disable_group_texts true \
+  --use_lora true \
+  --lora_r 16 \
+  --lora_alpha 32 \
+  --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --block_size 2048 \
+  --num_train_epochs 1 \
+  --per_device_train_batch_size 1 \
+  --gradient_accumulation_steps 8 \
+  --learning_rate 1e-4 \
+  --lr_scheduler_type cosine \
+  --warmup_steps 10 \
+  --bf16 true \
+  --torch_dtype bfloat16 \
+  --gradient_checkpointing true \
+  --use_flash_attention false \
+  --validation_split_percentage 0 \
+  --logging_steps 1 \
+  --save_steps 100 \
+  --dataloader_num_workers 2 \
+  --report_to none \
+  --do_train true \
+  --seed 42
+```
+
+The explicit Qwen3 template keeps system, tool-call, tool-observation, and final
+answer structure aligned with data construction. `train_on_prompt=false` trains
+only assistant spans, including both the reward-tool action and the answer that
+follows its feedback. The LoRA target set covers attention and MLP projections;
+reduce rank or block size first when a development GPU has insufficient memory.
+Large sharded checkpoints can also exceed a low process file-descriptor limit.
+Check `ulimit -n` before launch; for example, WSL users can prefix the command
+with `prlimit --nofile=65535:65535 --` when the configured hard limit permits.
+
+For LISA, use distributed FSDP2 and replace the LoRA flags with LISA controls:
+
+```bash
+accelerate launch \
+  --config_file configs/accelerate_fsdp2_config.yaml \
+  --num_processes 2 \
+  examples/finetune.py \
+  --model_name_or_path Qwen/Qwen3-8B \
+  --dataset_path gsm8k-tool-run/dataset \
+  --output_dir output_models/qwen3-8b-gsm8k-tool-lisa \
+  --conversation_template qwen3 \
+  --train_on_prompt false \
+  --disable_group_texts true \
+  --use_lisa true \
+  --lisa_activated_layers 1 \
+  --lisa_interval_steps 20 \
+  --lisa_layers_attribute model.model.layers \
+  --block_size 2048 \
+  --num_train_epochs 1 \
+  --per_device_train_batch_size 1 \
+  --gradient_accumulation_steps 8 \
+  --learning_rate 2e-5 \
+  --lr_scheduler_type cosine \
+  --warmup_steps 10 \
+  --bf16 true \
+  --torch_dtype bfloat16 \
+  --gradient_checkpointing true \
+  --use_flash_attention false \
+  --validation_split_percentage 0 \
+  --logging_steps 1 \
+  --save_steps 100 \
+  --dataloader_num_workers 2 \
+  --report_to none \
+  --do_train true \
+  --seed 42
+```
+
+The checked-in FSDP2 profile is a two-GPU, single-node starting point. Override
+the Accelerate topology for the actual node and GPU count. Its full-state-dict
+export favors a reloadable final artifact at the current 8B scale. FSDP LoRA
+runs export the adapter through Transformers Trainer and should merge it with the
+base model later in a non-sharded process. Larger models may require a separate
+adapter-only or distributed-checkpoint export strategy to avoid rank-zero CPU
+memory pressure. Treat the hyperparameters above as a reproducible bootstrap
+recipe and select production values on a fixed development split rather than
+from this smoke configuration.
