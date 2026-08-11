@@ -13,6 +13,7 @@ from lmflow.agentic.gsm8k import (
     run_gsm8k_reward_tool,
     score_gsm8k_answer,
 )
+from lmflow.agentic.gsm8k_dataset import generate_gsm8k_tool_dataset
 from lmflow.agentic.gsm8k_episode import run_gsm8k_tool_episode
 from lmflow.agentic.repository_cache import PreparedRepositoryCache, PreparedRepositoryCacheError
 from lmflow.agentic.rollout_groups import RolloutGroupAssembler
@@ -52,6 +53,7 @@ __all__ = [
     "build_task_batch",
     "convert_atif_file_to_conversation_dataset",
     "extract_gsm8k_answer",
+    "generate_gsm8k_tool_dataset",
     "gsm8k_example_to_task",
     "mini_swe_agent_artifact_to_atif",
     "mini_swe_agent_artifact_to_conversation",
