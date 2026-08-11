@@ -2,8 +2,8 @@
 
 LMFlow runs the pinned mini-swe-agent core behind two narrow adapters:
 
-- `OpenAICompatibleCompletionBackend` calls a synchronous OpenAI-compatible
-  Chat Completions endpoint, such as a vLLM server.
+- The shared Agentic `OpenAICompatibleCompletionBackend` calls a synchronous
+  OpenAI-compatible Chat Completions endpoint, such as a vLLM server.
 - `ProcessSandboxEnvironment` exposes the per-episode checkout through
   `ProcessSandbox` while preserving mini-swe-agent's Bash action and
   observation semantics.
@@ -35,10 +35,8 @@ provider response, including usage and provider-specific fields such as
 `reasoning_content`, is stored in the raw trajectory.
 
 ```python
-from lmflow.agentic.scaffolds.mini_swe_agent import (
-    LMFlowMiniSWEAgentModel,
-    OpenAICompatibleCompletionBackend,
-)
+from lmflow.agentic import OpenAICompatibleCompletionBackend
+from lmflow.agentic.scaffolds.mini_swe_agent import LMFlowMiniSWEAgentModel
 
 backend = OpenAICompatibleCompletionBackend(
     base_url="http://127.0.0.1:8000/v1",
