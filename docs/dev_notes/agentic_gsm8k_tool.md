@@ -15,6 +15,7 @@ The existing ATIF adapter then produces an LMFlow conversation SFT example.
 from lmflow.agentic import (
     OpenAICompatibleCompletionBackend,
     atif_trajectory_to_conversation,
+    generate_gsm8k_tool_dataset,
     gsm8k_example_to_task,
     run_gsm8k_tool_episode,
 )
@@ -37,14 +38,43 @@ trajectory = run_gsm8k_tool_episode(
     model_kwargs={"temperature": 0.7},
 )
 conversation = atif_trajectory_to_conversation(trajectory)
+
+report = generate_gsm8k_tool_dataset(
+    backend,
+    [task],
+    artifact_dir="gsm8k-tool-run",
+    model_name="Qwen/Qwen3-8B",
+    session_id="gsm8k-tool-run",
+    rollouts_per_task=4,
+    model_kwargs={"temperature": 0.7},
+)
 ```
 
 The episode records tool feedback, final reward, model-step count, reward-tool
 call count, and completion cost reported by the backend. A direct final answer
 without a tool call remains scoreable to match the reference recipe. Malformed
 tool calls and duplicate call IDs fail closed. Reaching `max_steps` without a
-final answer raises an error; batch-level failure artifacts and partial-output
-policy belong to the later data-generation layer.
+final answer raises an error.
+
+The batch generator runs tasks and rollout indices in deterministic order. It
+publishes one artifact directory only after all episodes finish successfully:
+
+```text
+gsm8k-tool-run/
+  trajectories.jsonl
+  report.json
+  dataset/
+    data.json
+```
+
+`trajectories.jsonl` retains every completed trajectory, including incorrect
+answers. Only reward-1 trajectories are selected into the conversation dataset
+for cold-start SFT. Point LMFlow's Dataset loader at the nested `dataset/`
+directory so `report.json` is never interpreted as a training shard. The report
+contains task, rollout, reward, model-step, tool-call, and provider-reported cost
+aggregates. If an episode or conversion fails, the staging directory is removed
+and no partial artifact is published. Concurrent generation, retry/resume, and
+partial-success publication remain outside this synchronous baseline.
 
 This runner is for data construction and evaluation through an OpenAI-compatible
 control plane. It does not provide sampled token IDs or log-probabilities and
