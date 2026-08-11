@@ -100,6 +100,18 @@ def test_bounds_stdout_and_stderr_without_pipe_backpressure(tmp_path):
     assert result.stderr_truncated is True
 
 
+def test_can_merge_stderr_for_ordered_agent_observations(tmp_path):
+    sandbox = ProcessSandbox(tmp_path)
+    code = "import os; os.write(1, b'first\\n'); os.write(2, b'second\\n'); os.write(1, b'third\\n')"
+
+    result = sandbox.run([sys.executable, "-c", code], merge_stderr=True)
+
+    assert result.returncode == 0
+    assert result.stdout == "first\nsecond\nthird\n"
+    assert result.stderr == ""
+    assert result.stderr_truncated is False
+
+
 def test_timeout_kills_the_command_process_group(tmp_path):
     sandbox = ProcessSandbox(tmp_path, timeout_seconds=0.2)
     code = (

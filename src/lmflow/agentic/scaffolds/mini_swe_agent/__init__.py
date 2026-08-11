@@ -1,0 +1,28 @@
+"""Pinned mini-swe-agent scaffold core and LMFlow integration adapters."""
+
+from lmflow.agentic.scaffolds.mini_swe_agent._vendor import UPSTREAM_COMMIT, UPSTREAM_VERSION
+from lmflow.agentic.scaffolds.mini_swe_agent._vendor.agent import AgentConfig, DefaultAgent
+from lmflow.agentic.scaffolds.mini_swe_agent._vendor.exceptions import FormatError, Submitted
+from lmflow.agentic.scaffolds.mini_swe_agent._vendor.toolcalls import BASH_TOOL
+from lmflow.agentic.scaffolds.mini_swe_agent.adapters import (
+    CompletionBackend,
+    LMFlowMiniSWEAgentModel,
+    MiniSWEAgentModelConfig,
+    ProcessSandboxEnvironment,
+    ProcessSandboxEnvironmentConfig,
+)
+
+__all__ = [
+    "AgentConfig",
+    "BASH_TOOL",
+    "CompletionBackend",
+    "DefaultAgent",
+    "FormatError",
+    "LMFlowMiniSWEAgentModel",
+    "MiniSWEAgentModelConfig",
+    "ProcessSandboxEnvironment",
+    "ProcessSandboxEnvironmentConfig",
+    "Submitted",
+    "UPSTREAM_COMMIT",
+    "UPSTREAM_VERSION",
+]

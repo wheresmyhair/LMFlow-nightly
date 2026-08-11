@@ -49,7 +49,8 @@ setup(
     long_description_content_type="text/markdown",
     package_dir={"": "src"},
     packages=find_packages("src"),
-    package_data={},
+    package_data={"lmflow.agentic.scaffolds.mini_swe_agent": ["UPSTREAM.md"]},
+    license_files=["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"],
     install_requires=install_requires,
     extras_require=extra_require,
     classifiers=[
