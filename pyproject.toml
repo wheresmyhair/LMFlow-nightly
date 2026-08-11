@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 # Note: While the formatter will attempt to format lines such that they remain within the line-length,
 # it isn't a hard upper bound, and formatted lines may exceed the line-length.
-target-version = "py39"
+target-version = "py312"
 line-length = 120
 exclude = [
     "tests/utils/test_data_utils.py",
@@ -43,7 +43,8 @@ ignore = [
     "B007",
     # f-string format
     "UP032",
-    # Can remove once 3.10+ is the minimum Python version
+    # Retained to avoid mixing a repository-wide annotation rewrite into the
+    # Python baseline change; new code may use PEP 604 unions.
     "UP007",
     # `.log()` statement uses f-string
     "G004",

@@ -5,8 +5,6 @@ from dataclasses import Field, fields, make_dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-from lmflow.utils.versioning import get_python_version
-
 logger = logging.getLogger(__name__)
 
 
@@ -95,35 +93,20 @@ def create_copied_dataclass(original_dataclass, field_prefix: str, class_prefix:
     new_default = new_default or {}
     new_fields = []
     for field in original_fields:
-        if get_python_version().minor >= 10:
-            new_field = (
-                f"{field_prefix}{field.name}",
-                field.type,
-                Field(
-                    default=new_default.get(f"{field_prefix}{field.name}", field.default),
-                    default_factory=field.default_factory,
-                    init=field.init,
-                    repr=field.repr,
-                    hash=field.hash,
-                    compare=field.compare,
-                    metadata=field.metadata,
-                    kw_only=False,  # add in py3.10: https://docs.python.org/3/library/dataclasses.html
-                ),
-            )
-        else:
-            new_field = (
-                f"{field_prefix}{field.name}",
-                field.type,
-                Field(
-                    default=new_default.get(f"{field_prefix}{field.name}", field.default),
-                    default_factory=field.default_factory,
-                    init=field.init,
-                    repr=field.repr,
-                    hash=field.hash,
-                    compare=field.compare,
-                    metadata=field.metadata,
-                ),
-            )
+        new_field = (
+            f"{field_prefix}{field.name}",
+            field.type,
+            Field(
+                default=new_default.get(f"{field_prefix}{field.name}", field.default),
+                default_factory=field.default_factory,
+                init=field.init,
+                repr=field.repr,
+                hash=field.hash,
+                compare=field.compare,
+                metadata=field.metadata,
+                kw_only=False,
+            ),
+        )
 
         new_fields.append(new_field)
     copied_dataclass = make_dataclass(f"{class_prefix}{original_dataclass.__name__}", new_fields)
