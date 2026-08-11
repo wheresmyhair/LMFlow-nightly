@@ -97,7 +97,7 @@ class LMFlowMiniSWEAgentModel:
             raise TypeError("completion message tool_calls must be a list")
         tool_calls = [LMFlowMiniSWEAgentModel._tool_call_view(call) for call in raw_tool_calls]
         cost = response.get("cost", 0.0)
-        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0:
+        if isinstance(cost, bool) or not isinstance(cost, int | float) or not math.isfinite(cost) or cost < 0:
             raise ValueError("completion response cost must be a finite non-negative number")
         raw_response = response.get("raw_response", response)
         try:
@@ -209,6 +209,17 @@ class ProcessSandboxEnvironment(LocalEnvironment):
             }
         self._check_finished(output)
         return output
+
+    def serialize(self) -> dict[str, Any]:
+        data = super().serialize()
+        data["info"]["config"]["sandbox"] = {
+            "sandbox_type": f"{self.sandbox.__class__.__module__}.{self.sandbox.__class__.__name__}",
+            "timeout_seconds": self.sandbox.timeout_seconds,
+            "max_output_bytes": self.sandbox.max_output_bytes,
+            "limits": self.sandbox.limits.as_dict(),
+            "capabilities": self.sandbox.capabilities,
+        }
+        return data
 
 
 __all__ = [
