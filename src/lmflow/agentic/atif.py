@@ -108,7 +108,7 @@ def _select_model_visible_tools(
 ) -> tuple[list[dict[str, Any]], set[str]]:
     if value is None:
         return tools, defined_tool_names
-    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Collection):
+    if isinstance(value, str | bytes | Mapping) or not isinstance(value, Collection):
         raise ValueError("model_visible_tool_names must be a collection of tool names")
 
     visible_tool_names = set()
@@ -220,9 +220,11 @@ def _append_tool_observations(
     raw_observation: Any,
     call_names: Mapping[str, str],
     step_path: str,
+    *,
+    allow_missing: bool = False,
 ) -> None:
     if raw_observation is None:
-        if call_names:
+        if call_names and not allow_missing:
             raise ValueError(f"{step_path}.observation is required for tool calls")
         return
 
@@ -286,8 +288,11 @@ def atif_trajectory_to_conversation(
     Deterministic steps are supported only when they contain structured tool calls
     with complete text observations and no reasoning or model metrics. Context
     replacement, aggregated multi-call steps, subagents, continuations, multimodal
-    content, and non-tool observations fail closed. Every agent step must explicitly
-    set ``llm_call_count`` to 0 or 1 so its SFT attribution is known. Whenever a
+    content, and non-tool observations fail closed. A final model-generated,
+    trainable tool-call step may omit its observation because episode termination
+    can prevent that result from entering any later model prompt; all other tool
+    calls require complete observations. Every agent step must explicitly set
+    ``llm_call_count`` to 0 or 1 so its SFT attribution is known. Whenever a
     deterministic step is present, callers must also provide the exact top-level
     tools shown to the model through ``model_visible_tool_names``. Tool call IDs
     must be unique across the trajectory.
@@ -457,7 +462,16 @@ def atif_trajectory_to_conversation(
         if not excluded_from_loss:
             has_trainable_assistant_step = True
 
-        _append_tool_observations(messages, step.get("observation"), call_names, step_path)
+        allow_missing_observation = (
+            index == len(steps) - 1 and llm_call_count == 1 and not excluded_from_loss and bool(tool_calls)
+        )
+        _append_tool_observations(
+            messages,
+            step.get("observation"),
+            call_names,
+            step_path,
+            allow_missing=allow_missing_observation,
+        )
 
     unknown_visibility_steps = set(visibility_by_step) - seen_step_ids
     if unknown_visibility_steps:

@@ -64,3 +64,34 @@ zero monetary cost because an OpenAI-compatible response does not define a
 portable pricing contract. It also does not provide the exact prompt/output
 token ids or sampled-token log-probabilities required by online RL. The
 token-native vLLM rollout adapter is a separate data-plane capability.
+
+## SFT export boundary
+
+The raw `trajectory.json` and `model.patch` pair remains the authoritative
+episode artifact. `mini_swe_agent_artifact_to_atif()` validates the pinned
+mini-swe-agent format and projects its model-visible, text-only history into
+ATIF v1.7. `mini_swe_agent_artifact_to_conversation()` then reuses LMFlow's ATIF
+adapter to produce one conversation SFT example.
+
+The projection keeps accepted assistant messages, reasoning, Bash tool calls,
+and the rendered tool observations that were sent to later model requests.
+Visible format-correction messages are also retained as user context. Raw
+provider responses, sandbox diagnostics, the terminal `exit` control message,
+and the patch stay in the source artifact rather than becoming prompt tokens.
+Tool arguments are parsed as strict JSON and later serialized canonically by
+the conversation adapter; consumers that need byte-exact provider output must
+read the raw trajectory.
+
+A successful submission commonly terminates while executing the final
+model-generated Bash call. That call has no tool observation because no later
+model request receives one. The ATIF conversation adapter permits this only for
+the final trainable model step. Missing observations before any later
+model-visible message still fail closed.
+
+The initial exporter accepts only artifacts produced by LMFlow's pinned
+mini-swe-agent model/environment adapters with multimodal expansion disabled.
+Unsupported provider message fields, malformed or mismatched actions,
+non-strict tool arguments, incomplete nonterminal observations, and version or
+provenance mismatches are rejected. Batch discovery, dataset selection,
+verification labels, and partial-publication policy remain separate data
+pipeline responsibilities.

@@ -6,8 +6,9 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 from lmflow.agentic.sandbox import ProcessLimits, ProcessSandbox
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor import UPSTREAM_COMMIT, Model
@@ -19,6 +20,7 @@ PathLike = str | os.PathLike[str]
 
 _PATCH_FILENAME = "model.patch"
 _TRAJECTORY_FILENAME = "trajectory.json"
+_TRAJECTORY_FORMAT = "mini-swe-agent-1.1"
 
 
 def _resolve_new_artifact_dir(artifact_dir: PathLike) -> Path:
@@ -35,6 +37,55 @@ def _resolve_new_artifact_dir(artifact_dir: PathLike) -> Path:
     if os.path.lexists(target):
         raise FileExistsError(f"artifact_dir already exists: {target}")
     return target
+
+
+def _resolve_existing_artifact_dir(artifact_dir: PathLike) -> Path:
+    try:
+        path = Path(artifact_dir).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError) as error:
+        raise ValueError("artifact_dir must be an existing directory") from error
+    if not path.is_dir():
+        raise ValueError("artifact_dir must be an existing directory")
+    return path
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r} is not allowed")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r} is not allowed")
+        result[key] = value
+    return result
+
+
+def load_mini_swe_agent_artifact(artifact_dir: PathLike) -> tuple[dict[str, Any], bytes]:
+    """Load one exact raw trajectory/patch pair published by the runner."""
+    artifact = _resolve_existing_artifact_dir(artifact_dir)
+    patch_path = artifact / _PATCH_FILENAME
+    trajectory_path = artifact / _TRAJECTORY_FILENAME
+    if patch_path.is_symlink() or trajectory_path.is_symlink():
+        raise ValueError("episode artifact files must not be symlinks")
+    if not patch_path.is_file() or not trajectory_path.is_file():
+        raise ValueError("artifact_dir must contain model.patch and trajectory.json files")
+    try:
+        trajectory = json.loads(
+            trajectory_path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("trajectory.json must contain strict UTF-8 JSON") from error
+    if not isinstance(trajectory, Mapping) or trajectory.get("trajectory_format") != _TRAJECTORY_FORMAT:
+        raise ValueError(f"trajectory.json must use {_TRAJECTORY_FORMAT!r}")
+    try:
+        patch = patch_path.read_bytes()
+    except OSError as error:
+        raise ValueError("failed to read episode model.patch") from error
+    return dict(trajectory), patch
 
 
 def _write_artifact(path: Path, content: bytes) -> None:
@@ -171,4 +222,4 @@ def run_mini_swe_agent_episode(
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-__all__ = ["run_mini_swe_agent_episode"]
+__all__ = ["load_mini_swe_agent_artifact", "run_mini_swe_agent_episode"]

@@ -198,6 +198,62 @@ def test_reorders_multi_tool_results_to_match_call_order_and_canonicalizes_argum
     assert [result["content"] for result in tool_results] == ["OBS_TOKEN", "SECOND_OBSERVATION"]
 
 
+def test_allows_terminal_model_generated_tool_call_without_observation():
+    trajectory = _atif_trajectory()
+    trajectory["steps"][-1] = {
+        "step_id": 4,
+        "source": "agent",
+        "message": "SUBMIT_TOKEN",
+        "llm_call_count": 1,
+        "tool_calls": [
+            {
+                "tool_call_id": "call-submit",
+                "function_name": "bash",
+                "arguments": {"command": "submit"},
+            }
+        ],
+    }
+
+    conversation = atif_trajectory_to_conversation(trajectory)
+
+    assert conversation["messages"][-1] == {
+        "role": "assistant",
+        "content": "SUBMIT_TOKEN",
+        "tool_calls": [
+            {
+                "id": "call-submit",
+                "type": "function",
+                "function": {"name": "bash", "arguments": '{"command":"submit"}'},
+            }
+        ],
+    }
+
+
+def test_requires_observation_for_nonterminal_or_excluded_tool_calls():
+    trajectory = _atif_trajectory()
+    trajectory["steps"][2].pop("observation")
+    with pytest.raises(ValueError, match="observation is required for tool calls"):
+        atif_trajectory_to_conversation(trajectory)
+
+    trajectory = _atif_trajectory()
+    trajectory["steps"][-1] = {
+        "step_id": 4,
+        "source": "agent",
+        "message": "COPIED_SUBMIT_TOKEN",
+        "llm_call_count": 1,
+        "is_copied_context": True,
+        "tool_calls": [
+            {
+                "tool_call_id": "call-submit",
+                "function_name": "bash",
+                "arguments": {"command": "submit"},
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="observation is required for tool calls"):
+        atif_trajectory_to_conversation(trajectory)
+
+
 def test_uses_session_id_when_trajectory_id_is_absent():
     trajectory = _atif_trajectory()
     trajectory.pop("trajectory_id")

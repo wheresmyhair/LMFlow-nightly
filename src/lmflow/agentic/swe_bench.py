@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -13,16 +12,16 @@ from lmflow.agentic.contracts import TaskSpec
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor import Model
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor.agent import AgentConfig
-from lmflow.agentic.scaffolds.mini_swe_agent.runner import run_mini_swe_agent_episode
+from lmflow.agentic.scaffolds.mini_swe_agent.runner import (
+    load_mini_swe_agent_artifact,
+    run_mini_swe_agent_episode,
+)
 from lmflow.agentic.workspace import EpisodeWorkspace
 
 PathLike = str | os.PathLike[str]
 
 _ENVIRONMENT_KIND = "swe_bench"
 _FULL_COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
-_PATCH_FILENAME = "model.patch"
-_TRAJECTORY_FILENAME = "trajectory.json"
-_TRAJECTORY_FORMAT = "mini-swe-agent-1.1"
 
 
 def _required_string(mapping: Mapping[str, Any], key: str) -> str:
@@ -135,28 +134,9 @@ def run_swe_bench_episode(
     )
 
 
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant {value!r} is not allowed")
-
-
 def _load_episode_artifact(task: TaskSpec, artifact_dir: PathLike) -> tuple[bytes, str]:
     task_text, base_revision = _task_identity(task)
-    artifact = _resolve_directory(artifact_dir, name="artifact_dir")
-    patch_path = artifact / _PATCH_FILENAME
-    trajectory_path = artifact / _TRAJECTORY_FILENAME
-    if patch_path.is_symlink() or trajectory_path.is_symlink():
-        raise ValueError("episode artifact files must not be symlinks")
-    if not patch_path.is_file() or not trajectory_path.is_file():
-        raise ValueError("artifact_dir must contain model.patch and trajectory.json files")
-    try:
-        trajectory = json.loads(
-            trajectory_path.read_text(encoding="utf-8"),
-            parse_constant=_reject_json_constant,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError("trajectory.json must contain strict UTF-8 JSON") from error
-    if not isinstance(trajectory, Mapping) or trajectory.get("trajectory_format") != _TRAJECTORY_FORMAT:
-        raise ValueError(f"trajectory.json must use {_TRAJECTORY_FORMAT!r}")
+    trajectory, patch = load_mini_swe_agent_artifact(artifact_dir)
     try:
         lmflow_info = trajectory["info"]["lmflow"]
     except (KeyError, TypeError) as error:
@@ -174,10 +154,6 @@ def _load_episode_artifact(task: TaskSpec, artifact_dir: PathLike) -> tuple[byte
     rollout_id = lmflow_info.get("rollout_id")
     if not isinstance(rollout_id, str) or not rollout_id or "\0" in rollout_id:
         raise ValueError("episode artifact rollout_id must be a non-empty string")
-    try:
-        patch = patch_path.read_bytes()
-    except OSError as error:
-        raise ValueError("failed to read episode model.patch") from error
     return patch, rollout_id
 
 
