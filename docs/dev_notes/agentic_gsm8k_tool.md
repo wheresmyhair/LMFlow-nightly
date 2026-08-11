@@ -76,6 +76,29 @@ aggregates. If an episode or conversion fails, the staging directory is removed
 and no partial artifact is published. Concurrent generation, retry/resume, and
 partial-success publication remain outside this synchronous baseline.
 
+For a bounded run against an OpenAI-compatible endpoint, use the packaged CLI:
+
+```bash
+python -m lmflow.agentic.generate_gsm8k_dataset \
+  --artifact-dir gsm8k-tool-run \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model-name Qwen/Qwen3-8B \
+  --session-id gsm8k-tool-run \
+  --split train \
+  --start-index 0 \
+  --limit 16 \
+  --rollouts-per-task 4
+```
+
+The required `--limit` makes the number of source tasks and resulting upper
+bound on completion calls explicit before a paid run. The default source is
+`openai/gsm8k` with configuration `main`; `--input-path rows.jsonl` selects a
+local JSON/JSONL export. API credentials are read from `OPENAI_API_KEY` by
+default, or from the environment variable named by `--api-key-env`; credentials
+are never accepted as command-line values. Dataset rows are selected as the
+exact contiguous interval `[start-index, start-index + limit)`, preserving the
+original row indices in task and trajectory identities.
+
 This runner is for data construction and evaluation through an OpenAI-compatible
 control plane. It does not provide sampled token IDs or log-probabilities and
 cannot serve as the token-native rollout source for online GRPO.
