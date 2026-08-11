@@ -193,12 +193,29 @@ class EpisodeWorkspace:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.cleanup()
 
-    def _git(self, arguments: Sequence[str]) -> bytes:
+    def apply_patch_bytes(self, patch: bytes) -> None:
+        """Apply an exact Git patch to the clean checkout and index.
+
+        Empty patches are valid no-op predictions. Non-empty patches must
+        apply directly to ``base_revision``; this method intentionally avoids
+        fuzzy or three-way fallback so artifact/revision mismatches fail
+        before a verifier command runs.
+        """
+        self._ensure_active()
+        if not isinstance(patch, bytes):
+            raise TypeError("patch must be bytes")
+        if not patch:
+            return
+        self._git(("apply", "--check", "--index", "--binary", "-"), input_bytes=patch)
+        self._git(("apply", "--index", "--binary", "-"), input_bytes=patch)
+
+    def _git(self, arguments: Sequence[str], *, input_bytes: bytes | None = None) -> bytes:
         return self._run_git(
             arguments,
             cwd=self.path,
             git_home=self._git_home,
             timeout_seconds=self.git_timeout_seconds,
+            input_bytes=input_bytes,
         )
 
     def _ensure_active(self) -> None:
@@ -282,6 +299,7 @@ class EpisodeWorkspace:
         cwd: Path,
         git_home: Path,
         timeout_seconds: float,
+        input_bytes: bytes | None = None,
     ) -> bytes:
         command = ("git", *arguments)
         try:
@@ -289,7 +307,8 @@ class EpisodeWorkspace:
                 command,
                 cwd=cwd,
                 env=cls._git_environment(git_home),
-                stdin=subprocess.DEVNULL,
+                input=input_bytes,
+                stdin=subprocess.DEVNULL if input_bytes is None else None,
                 capture_output=True,
                 check=False,
                 timeout=timeout_seconds,

@@ -11,9 +11,11 @@ LMFlow runs the pinned mini-swe-agent core behind two narrow adapters:
 `run_mini_swe_agent_episode()` composes those adapters with an
 `EpisodeWorkspace`. It owns one rollout attempt from checkout creation through
 patch export and cleanup, then atomically publishes `trajectory.json` and
-`model.patch` in a new artifact directory. Task ingestion, source-repository
-preparation, model-server lifecycle, scheduling, and verification remain caller
-responsibilities.
+`model.patch` in a new artifact directory. The
+[SWE-bench adapter](agentic_swe_bench.md) prepares benchmark tasks, exports
+official prediction records, and runs explicit verifier commands in fresh workspaces.
+Source-repository acquisition, model-server lifecycle, scheduling, and official
+SWE-bench grading remain caller responsibilities.
 
 ## Completion boundary
 
