@@ -11,6 +11,7 @@ from lmflow.agentic.scaffolds.mini_swe_agent.adapters import (
     ProcessSandboxEnvironment,
     ProcessSandboxEnvironmentConfig,
 )
+from lmflow.agentic.scaffolds.mini_swe_agent.runner import run_mini_swe_agent_episode
 
 __all__ = [
     "AgentConfig",
@@ -25,4 +26,5 @@ __all__ = [
     "Submitted",
     "UPSTREAM_COMMIT",
     "UPSTREAM_VERSION",
+    "run_mini_swe_agent_episode",
 ]
