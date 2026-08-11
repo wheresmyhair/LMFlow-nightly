@@ -55,10 +55,10 @@ setup(
     classifiers=[
         "Intended Audience :: Science/Research/Engineering",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.12",
     ],
-    python_requires=">=3.9",
+    python_requires=">=3.12",
 )
 
 # optionals
