@@ -10,6 +10,7 @@ import pytest
 from lmflow.agentic import (
     EpisodeWorkspace,
     EpisodeWorkspaceError,
+    PreparedRepositoryCache,
     prepare_swe_bench_task,
     run_swe_bench_episode,
     swe_bench_prediction_from_artifact,
@@ -153,6 +154,66 @@ def test_prepare_task_excludes_gold_and_grading_fields(tmp_path):
         "test_existing",
     ):
         assert hidden_value not in serialized
+
+
+def test_prepare_task_can_acquire_exact_commit_through_repository_cache(tmp_path):
+    source_repo = tmp_path / "source"
+    revision = _create_source_repo(source_repo)
+    cache_root = tmp_path / "repository-cache"
+    cache_root.mkdir()
+    cache = PreparedRepositoryCache(cache_root)
+
+    task = prepare_swe_bench_task(
+        _instance(revision),
+        repository_cache=cache,
+        repository_url=str(source_repo),
+    )
+
+    prepared_repo = task.environment["source_repo"]
+    assert prepared_repo != str(source_repo)
+    assert _run_git(prepared_repo, "rev-parse", "refs/lmflow/base").decode("ascii").strip() == revision
+    assert task.environment["base_revision"] == revision
+
+
+def test_prepare_task_defaults_to_official_github_repository_url(tmp_path, monkeypatch):
+    source_repo = tmp_path / "source"
+    revision = _create_source_repo(source_repo)
+    cache_root = tmp_path / "repository-cache"
+    cache_root.mkdir()
+    cache = PreparedRepositoryCache(cache_root)
+    calls = []
+
+    def prepare(repository, base_revision):
+        calls.append((repository, base_revision))
+        return source_repo.resolve()
+
+    monkeypatch.setattr(cache, "prepare", prepare)
+
+    task = prepare_swe_bench_task(_instance(revision), repository_cache=cache)
+
+    assert calls == [("https://github.com/example/project.git", revision)]
+    assert task.environment["source_repo"] == str(source_repo.resolve())
+
+
+def test_prepare_task_requires_one_repository_source(tmp_path):
+    source_repo = tmp_path / "source"
+    revision = _create_source_repo(source_repo)
+    cache_root = tmp_path / "repository-cache"
+    cache_root.mkdir()
+    cache = PreparedRepositoryCache(cache_root)
+    instance = _instance(revision)
+
+    with pytest.raises(ValueError, match="exactly one"):
+        prepare_swe_bench_task(instance)
+    with pytest.raises(ValueError, match="exactly one"):
+        prepare_swe_bench_task(instance, source_repo=source_repo, repository_cache=cache)
+    with pytest.raises(ValueError, match="only valid with repository_cache"):
+        prepare_swe_bench_task(instance, source_repo=source_repo, repository_url=str(source_repo))
+
+    invalid_repo = _instance(revision)
+    invalid_repo["repo"] = "../unexpected"
+    with pytest.raises(ValueError, match="owner/name"):
+        prepare_swe_bench_task(invalid_repo, repository_cache=cache)
 
 
 @pytest.mark.parametrize(

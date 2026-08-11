@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from lmflow.agentic.contracts import TaskSpec
+from lmflow.agentic.repository_cache import PreparedRepositoryCache
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor import Model
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor.agent import AgentConfig
@@ -22,6 +23,7 @@ PathLike = str | os.PathLike[str]
 
 _ENVIRONMENT_KIND = "swe_bench"
 _FULL_COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
+_GITHUB_REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
 def _required_string(mapping: Mapping[str, Any], key: str) -> str:
@@ -43,12 +45,21 @@ def _resolve_directory(path: PathLike, *, name: str) -> Path:
     return resolved
 
 
-def prepare_swe_bench_task(instance: Mapping[str, Any], *, source_repo: PathLike) -> TaskSpec:
+def prepare_swe_bench_task(
+    instance: Mapping[str, Any],
+    *,
+    source_repo: PathLike | None = None,
+    repository_cache: PreparedRepositoryCache | None = None,
+    repository_url: str | None = None,
+) -> TaskSpec:
     """Project one official SWE-bench instance into the existing TaskSpec.
 
     Only model-visible task input and repository identity are copied. Golden
     patches, test patches, hints, and F2P/P2P grading fields remain outside the
-    task passed to the scaffold.
+    task passed to the scaffold. Callers provide either an existing local
+    ``source_repo`` or a ``repository_cache`` that prepares the exact base
+    commit. ``repository_url`` overrides the default GitHub URL only for the
+    cache-backed path.
     """
     if not isinstance(instance, Mapping):
         raise TypeError("instance must be a mapping")
@@ -58,7 +69,22 @@ def prepare_swe_bench_task(instance: Mapping[str, Any], *, source_repo: PathLike
     if _FULL_COMMIT_PATTERN.fullmatch(base_commit) is None:
         raise ValueError("SWE-bench field 'base_commit' must be a full 40-character Git commit")
     problem_statement = _required_string(instance, "problem_statement")
-    source = _resolve_directory(source_repo, name="source_repo")
+    if (source_repo is None) == (repository_cache is None):
+        raise ValueError("provide exactly one of source_repo or repository_cache")
+    if source_repo is not None:
+        if repository_url is not None:
+            raise ValueError("repository_url is only valid with repository_cache")
+        source = _resolve_directory(source_repo, name="source_repo")
+    else:
+        if not isinstance(repository_cache, PreparedRepositoryCache):
+            raise TypeError("repository_cache must be a PreparedRepositoryCache instance")
+        if repository_url is None:
+            if _GITHUB_REPOSITORY_PATTERN.fullmatch(repo) is None or any(
+                component in {".", ".."} for component in repo.split("/")
+            ):
+                raise ValueError("SWE-bench field 'repo' must be an owner/name GitHub repository")
+            repository_url = f"https://github.com/{repo}.git"
+        source = repository_cache.prepare(repository_url, base_commit)
 
     return TaskSpec(
         task_id=instance_id,
