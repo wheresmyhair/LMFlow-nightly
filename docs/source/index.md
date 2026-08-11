@@ -114,7 +114,7 @@ This package can be be installed from sources with the following command:
 ```bash
 git clone https://github.com/OptimalScale/LMFlow.git
 
-conda create -n lmflow python=3.9 -y
+conda create -n lmflow python=3.12 -y
 
 conda activate lmflow
 
