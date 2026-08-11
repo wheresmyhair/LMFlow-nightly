@@ -11,6 +11,7 @@ from lmflow.agentic.scaffolds.mini_swe_agent.adapters import (
     ProcessSandboxEnvironment,
     ProcessSandboxEnvironmentConfig,
 )
+from lmflow.agentic.scaffolds.mini_swe_agent.openai_backend import OpenAICompatibleCompletionBackend
 from lmflow.agentic.scaffolds.mini_swe_agent.runner import run_mini_swe_agent_episode
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "FormatError",
     "LMFlowMiniSWEAgentModel",
     "MiniSWEAgentModelConfig",
+    "OpenAICompatibleCompletionBackend",
     "ProcessSandboxEnvironment",
     "ProcessSandboxEnvironmentConfig",
     "Submitted",
