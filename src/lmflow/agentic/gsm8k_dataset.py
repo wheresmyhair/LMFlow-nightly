@@ -14,6 +14,7 @@ from typing import Any
 from lmflow.agentic.atif import atif_trajectory_to_conversation
 from lmflow.agentic.completion import CompletionBackend
 from lmflow.agentic.contracts import TaskSpec
+from lmflow.agentic.gsm8k import gsm8k_example_to_task
 from lmflow.agentic.gsm8k_episode import run_gsm8k_tool_episode
 
 PathLike = str | os.PathLike[str]
@@ -21,6 +22,90 @@ PathLike = str | os.PathLike[str]
 _DATASET_FILENAME = "data.json"
 _RAW_TRAJECTORIES_FILENAME = "trajectories.jsonl"
 _REPORT_FILENAME = "report.json"
+
+
+def load_gsm8k_tasks(
+    *,
+    split: str,
+    start_index: int,
+    limit: int,
+    dataset_name: str = "openai/gsm8k",
+    dataset_config: str | None = "main",
+    input_path: PathLike | None = None,
+    cache_dir: PathLike | None = None,
+) -> list[TaskSpec]:
+    """Load one explicit, contiguous GSM8K task range.
+
+    By default this reads the official ``openai/gsm8k`` dataset. Supplying
+    ``input_path`` selects a local JSON or JSONL file through the same Hugging
+    Face Datasets reader. The exact original row index remains part of each
+    task identity so separate non-overlapping runs can be combined safely.
+    """
+
+    if not isinstance(split, str) or not split.strip():
+        raise ValueError("split must be a non-empty string")
+    if isinstance(start_index, bool) or not isinstance(start_index, int):
+        raise TypeError("start_index must be an integer")
+    if start_index < 0:
+        raise ValueError("start_index must be non-negative")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise TypeError("limit must be an integer")
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    if not isinstance(dataset_name, str) or not dataset_name.strip():
+        raise ValueError("dataset_name must be a non-empty string")
+    if dataset_config is not None and (not isinstance(dataset_config, str) or not dataset_config.strip()):
+        raise ValueError("dataset_config must be a non-empty string when provided")
+
+    try:
+        from datasets import load_dataset
+    except ImportError as error:
+        raise ImportError("GSM8K task loading requires the 'datasets' package") from error
+
+    cache_path = None if cache_dir is None else str(Path(cache_dir))
+    if input_path is None:
+        dataset = load_dataset(
+            dataset_name,
+            dataset_config,
+            split=split,
+            cache_dir=cache_path,
+        )
+        data_source = dataset_name
+    else:
+        path = Path(input_path)
+        if path.suffix.lower() not in {".json", ".jsonl"}:
+            raise ValueError("input_path must use the .json or .jsonl extension")
+        try:
+            path = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise ValueError("input_path must be an existing file") from error
+        if not path.is_file():
+            raise ValueError("input_path must be an existing file")
+        dataset = load_dataset(
+            "json",
+            data_files={split: str(path)},
+            split=split,
+            cache_dir=cache_path,
+        )
+        data_source = f"local:{path.name}"
+
+    try:
+        dataset_size = len(dataset)
+    except TypeError as error:
+        raise TypeError("GSM8K task loading requires a finite map-style dataset") from error
+    stop_index = start_index + limit
+    if start_index >= dataset_size or stop_index > dataset_size:
+        raise ValueError(f"requested rows [{start_index}, {stop_index}) exceed {split!r} dataset size {dataset_size}")
+
+    return [
+        gsm8k_example_to_task(
+            dataset[index],
+            split=split,
+            index=index,
+            data_source=data_source,
+        )
+        for index in range(start_index, stop_index)
+    ]
 
 
 def _resolve_new_artifact_dir(artifact_dir: PathLike) -> Path:
@@ -216,4 +301,4 @@ def generate_gsm8k_tool_dataset(
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-__all__ = ["generate_gsm8k_tool_dataset"]
+__all__ = ["generate_gsm8k_tool_dataset", "load_gsm8k_tasks"]
