@@ -9,9 +9,12 @@ from lmflow.agentic.rollout_groups import RolloutGroupAssembler
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox, SandboxCapabilityError
 from lmflow.agentic.trl_dpo_trainer import TRLDPOTrainer
 from lmflow.agentic.trl_policy_trainer import TRLPolicyTrainer
+from lmflow.agentic.workspace import EpisodeWorkspace, EpisodeWorkspaceError
 
 __all__ = [
     "RolloutGroupAssembler",
+    "EpisodeWorkspace",
+    "EpisodeWorkspaceError",
     "ProcessLimits",
     "ProcessResult",
     "ProcessSandbox",
