@@ -123,8 +123,8 @@ def test_custom_multi_modal_backend_skips_huggingface_filter():
 def test_map_filter_runs_in_global_main_process_first_context():
     dataset = Dataset.from_dict(
         {
-            "input_ids": [[1], [2]],
-            "labels": [[-100], [2]],
+            "input_ids": [[1, 10], [2, 20]],
+            "labels": [[-100, -100], [-100, 2]],
         }
     )
     events = []
@@ -142,7 +142,7 @@ def test_map_filter_runs_in_global_main_process_first_context():
         main_process_first,
     )
 
-    assert filtered["input_ids"] == [[2]]
+    assert filtered["input_ids"] == [[2, 20]]
     assert events == [
         ("enter", False, "filtering train samples with loss labels"),
         ("exit", False, "filtering train samples with loss labels"),
