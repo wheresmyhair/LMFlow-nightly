@@ -16,7 +16,7 @@ your task, and install the following:
 git clone https://github.com/<YOUR-USERNAME>/LMFlow.git
 cd LMFlow
 git checkout -b <TASK-NAME>
-conda create -n lmflow python=3.9 -y
+conda create -n lmflow python=3.12 -y
 conda activate lmflow
 conda install mpi4py
 pip install -e .
@@ -129,4 +129,3 @@ LM_EVAL_DATASET_MAP ={
     "<TASK_COMBINATION>":"<TASK_1>,<TASK_2>,..",
 }
 ```
-

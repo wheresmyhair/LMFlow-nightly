@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 
 import pytest
 from datasets import Dataset, IterableDataset
@@ -117,3 +118,32 @@ def test_custom_multi_modal_backend_skips_huggingface_filter():
     prepared = _prepare_dataset_for_loss(dataset, "train", "custom_multi_modal")
 
     assert prepared is dataset
+
+
+def test_map_filter_runs_in_global_main_process_first_context():
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 10], [2, 20]],
+            "labels": [[-100, -100], [-100, 2]],
+        }
+    )
+    events = []
+
+    @contextmanager
+    def main_process_first(*, local, desc):
+        events.append(("enter", local, desc))
+        yield
+        events.append(("exit", local, desc))
+
+    filtered = _prepare_dataset_for_loss(
+        dataset,
+        "train",
+        "huggingface",
+        main_process_first,
+    )
+
+    assert filtered["input_ids"] == [[2, 20]]
+    assert events == [
+        ("enter", False, "filtering train samples with loss labels"),
+        ("exit", False, "filtering train samples with loss labels"),
+    ]
