@@ -7,6 +7,11 @@ from lmflow.agentic.grpo_controller import run_synchronous_grpo_step
 from lmflow.agentic.grpo_recipe import run_grpo_step
 from lmflow.agentic.rollout_groups import RolloutGroupAssembler
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox, SandboxCapabilityError
+from lmflow.agentic.scaffolds.mini_swe_agent.atif import (
+    mini_swe_agent_artifact_to_atif,
+    mini_swe_agent_artifact_to_conversation,
+    mini_swe_agent_trajectory_to_atif,
+)
 from lmflow.agentic.swe_bench import (
     prepare_swe_bench_task,
     run_swe_bench_episode,
@@ -31,6 +36,9 @@ __all__ = [
     "atif_trajectory_to_conversation",
     "build_task_batch",
     "convert_atif_file_to_conversation_dataset",
+    "mini_swe_agent_artifact_to_atif",
+    "mini_swe_agent_artifact_to_conversation",
+    "mini_swe_agent_trajectory_to_atif",
     "prepare_swe_bench_task",
     "run_grpo_step",
     "run_swe_bench_episode",

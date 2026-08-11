@@ -11,8 +11,16 @@ from lmflow.agentic.scaffolds.mini_swe_agent.adapters import (
     ProcessSandboxEnvironment,
     ProcessSandboxEnvironmentConfig,
 )
+from lmflow.agentic.scaffolds.mini_swe_agent.atif import (
+    mini_swe_agent_artifact_to_atif,
+    mini_swe_agent_artifact_to_conversation,
+    mini_swe_agent_trajectory_to_atif,
+)
 from lmflow.agentic.scaffolds.mini_swe_agent.openai_backend import OpenAICompatibleCompletionBackend
-from lmflow.agentic.scaffolds.mini_swe_agent.runner import run_mini_swe_agent_episode
+from lmflow.agentic.scaffolds.mini_swe_agent.runner import (
+    load_mini_swe_agent_artifact,
+    run_mini_swe_agent_episode,
+)
 
 __all__ = [
     "AgentConfig",
@@ -28,5 +36,9 @@ __all__ = [
     "Submitted",
     "UPSTREAM_COMMIT",
     "UPSTREAM_VERSION",
+    "load_mini_swe_agent_artifact",
+    "mini_swe_agent_artifact_to_atif",
+    "mini_swe_agent_artifact_to_conversation",
+    "mini_swe_agent_trajectory_to_atif",
     "run_mini_swe_agent_episode",
 ]

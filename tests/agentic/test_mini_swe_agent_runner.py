@@ -8,6 +8,8 @@ import pytest
 from lmflow.agentic.scaffolds.mini_swe_agent import (
     AgentConfig,
     LMFlowMiniSWEAgentModel,
+    mini_swe_agent_artifact_to_atif,
+    mini_swe_agent_artifact_to_conversation,
     run_mini_swe_agent_episode,
 )
 
@@ -151,6 +153,15 @@ def test_episode_runner_publishes_raw_trajectory_and_patch_then_cleans_workspace
     assert "diff --git a/blob.bin b/blob.bin" in patch
     assert "GIT binary patch" in patch
 
+    conversation = mini_swe_agent_artifact_to_conversation(artifact_dir)
+    assert [message["role"] for message in conversation["messages"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert conversation["messages"][-1]["tool_calls"][0]["id"] == "call-submit"
+
 
 def test_episode_runner_publishes_failure_artifacts_and_reraises(tmp_path):
     backend = FailingBackend()
@@ -166,6 +177,11 @@ def test_episode_runner_publishes_failure_artifacts_and_reraises(tmp_path):
     assert (artifact_dir / "model.patch").read_bytes() == b""
     assert list((tmp_path / "workspaces").iterdir()) == []
     assert backend.calls == 1
+
+    atif = mini_swe_agent_artifact_to_atif(artifact_dir)
+    assert [step["source"] for step in atif["steps"]] == ["system", "user"]
+    with pytest.raises(ValueError, match="no trainable agent steps"):
+        mini_swe_agent_artifact_to_conversation(artifact_dir)
 
 
 def test_episode_runner_rejects_existing_artifact_directory_before_starting_workspace(tmp_path):
