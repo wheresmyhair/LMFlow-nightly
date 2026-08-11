@@ -2,6 +2,7 @@
 
 from lmflow.agentic.atif import atif_trajectory_to_conversation
 from lmflow.agentic.atif_io import convert_atif_file_to_conversation_dataset
+from lmflow.agentic.completion import CompletionBackend, OpenAICompatibleCompletionBackend
 from lmflow.agentic.contracts import TaskSpec, build_task_batch
 from lmflow.agentic.grpo_controller import run_synchronous_grpo_step
 from lmflow.agentic.grpo_recipe import run_grpo_step
@@ -12,6 +13,7 @@ from lmflow.agentic.gsm8k import (
     run_gsm8k_reward_tool,
     score_gsm8k_answer,
 )
+from lmflow.agentic.gsm8k_episode import run_gsm8k_tool_episode
 from lmflow.agentic.repository_cache import PreparedRepositoryCache, PreparedRepositoryCacheError
 from lmflow.agentic.rollout_groups import RolloutGroupAssembler
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox, SandboxCapabilityError
@@ -34,6 +36,8 @@ __all__ = [
     "RolloutGroupAssembler",
     "EpisodeWorkspace",
     "EpisodeWorkspaceError",
+    "CompletionBackend",
+    "OpenAICompatibleCompletionBackend",
     "ProcessLimits",
     "ProcessResult",
     "ProcessSandbox",
@@ -55,6 +59,7 @@ __all__ = [
     "prepare_swe_bench_task",
     "run_grpo_step",
     "run_gsm8k_reward_tool",
+    "run_gsm8k_tool_episode",
     "run_swe_bench_episode",
     "run_synchronous_grpo_step",
     "swe_bench_prediction_from_artifact",

@@ -8,10 +8,11 @@ import math
 import time
 from collections.abc import Mapping
 from types import SimpleNamespace
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel
 
+from lmflow.agentic.completion import CompletionBackend
 from lmflow.agentic.sandbox import ProcessSandbox
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor.exceptions import FormatError
 from lmflow.agentic.scaffolds.mini_swe_agent._vendor.local import LocalEnvironment
@@ -21,19 +22,6 @@ from lmflow.agentic.scaffolds.mini_swe_agent._vendor.toolcalls import (
     format_toolcall_observation_messages,
     parse_toolcall_actions,
 )
-
-
-class CompletionBackend(Protocol):
-    """Provider-neutral synchronous completion boundary for an LMFlow backend."""
-
-    def complete(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        model_name: str,
-        model_kwargs: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
 
 
 class MiniSWEAgentModelConfig(BaseModel):
