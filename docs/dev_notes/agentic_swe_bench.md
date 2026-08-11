@@ -7,8 +7,9 @@ boundaries.
 
 ## Task preparation
 
-`prepare_swe_bench_task()` accepts one SWE-bench instance and a local source
-repository. It copies only these fields into the runtime task:
+`prepare_swe_bench_task()` accepts one SWE-bench instance and either a local
+source repository or `PreparedRepositoryCache`. It copies only these fields
+into the runtime task:
 
 - `instance_id`
 - `repo`
@@ -20,15 +21,18 @@ The golden `patch`, hidden `test_patch`, `hints_text`, `FAIL_TO_PASS`, and
 available to the external benchmark harness but cannot leak into the scaffold
 through this adapter.
 
-The source repository must already exist locally, and `base_commit` must be a
-full 40-character Git commit. Repository acquisition and cache management are
-caller responsibilities. The episode runner verifies the revision when it
-creates a fresh checkout, before the first model request.
+`base_commit` must be a full 40-character Git commit. With `source_repo`, the
+repository must already exist locally. With `repository_cache`, the adapter
+prepares the exact commit from `https://github.com/{repo}.git`; an explicit
+`repository_url` can select a mirror or local test source. The episode runner
+verifies the prepared revision again when it creates a fresh checkout, before
+the first model request.
 
 ```python
-from lmflow.agentic import prepare_swe_bench_task, run_swe_bench_episode
+from lmflow.agentic import PreparedRepositoryCache, prepare_swe_bench_task, run_swe_bench_episode
 
-task = prepare_swe_bench_task(instance, source_repo="/datasets/repos/django")
+repository_cache = PreparedRepositoryCache("/datasets/repository-cache")
+task = prepare_swe_bench_task(instance, repository_cache=repository_cache)
 artifact_dir = run_swe_bench_episode(
     task=task,
     model=model,
@@ -84,6 +88,6 @@ patches, or reimplement FAIL_TO_PASS/PASS_TO_PASS grading. The official
 SWE-bench harness remains authoritative for benchmark results.
 
 The current API intentionally handles one prepared task at a time. Batch
-scheduling, repository download or prepared-environment caching, persistent
-verification reports, and an official harness launcher are future orchestration
+scheduling, dependency-environment caching, persistent verification reports,
+cache eviction, and an official harness launcher are future orchestration
 layers rather than responsibilities of this adapter.

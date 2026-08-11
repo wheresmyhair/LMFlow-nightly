@@ -54,9 +54,11 @@ provides filesystem or network isolation for actively malicious code.
 ## Current limits
 
 The checkout uses a local shared Git object store to avoid copying repository
-history for every rollout. The source repository must remain available and its
-reachable objects must not be pruned while episodes are active. This is a
-node-local optimization, not a distributed cache contract.
+history for every rollout. A caller-managed source repository must remain
+available and its reachable objects must not be pruned while episodes are
+active. `PreparedRepositoryCache` can provide that stable node-local source and
+acquire an exact remote commit before rollout dispatch. The episode workspace
+itself remains a checkout lifecycle rather than a cache or download manager.
 
 This first slice does not implement dependency-environment caching, leases,
 heartbeats, crash reaping, overlay/reflink snapshots, resource telemetry, or a

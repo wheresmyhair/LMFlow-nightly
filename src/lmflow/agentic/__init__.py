@@ -5,6 +5,7 @@ from lmflow.agentic.atif_io import convert_atif_file_to_conversation_dataset
 from lmflow.agentic.contracts import TaskSpec, build_task_batch
 from lmflow.agentic.grpo_controller import run_synchronous_grpo_step
 from lmflow.agentic.grpo_recipe import run_grpo_step
+from lmflow.agentic.repository_cache import PreparedRepositoryCache, PreparedRepositoryCacheError
 from lmflow.agentic.rollout_groups import RolloutGroupAssembler
 from lmflow.agentic.sandbox import ProcessLimits, ProcessResult, ProcessSandbox, SandboxCapabilityError
 from lmflow.agentic.scaffolds.mini_swe_agent.atif import (
@@ -29,6 +30,8 @@ __all__ = [
     "ProcessLimits",
     "ProcessResult",
     "ProcessSandbox",
+    "PreparedRepositoryCache",
+    "PreparedRepositoryCacheError",
     "SandboxCapabilityError",
     "TRLDPOTrainer",
     "TRLPolicyTrainer",
