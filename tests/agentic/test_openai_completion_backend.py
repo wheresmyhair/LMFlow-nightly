@@ -137,6 +137,26 @@ def test_backend_rejects_multiple_provider_choices():
         backend.complete(messages=[], tools=[], model_name="served-model", model_kwargs={})
 
 
+def test_backend_omits_an_empty_tools_array_for_provider_compatibility():
+    client = RecordingClient(_response())
+    backend = OpenAICompatibleCompletionBackend(client=client)
+
+    backend.complete(
+        messages=[{"role": "user", "content": "Answer directly."}],
+        tools=[],
+        model_name="served-model",
+        model_kwargs={"temperature": 0.0},
+    )
+
+    assert client.chat.completions.requests == [
+        {
+            "model": "served-model",
+            "messages": [{"role": "user", "content": "Answer directly."}],
+            "temperature": 0.0,
+        }
+    ]
+
+
 def test_backend_does_not_close_a_caller_supplied_client():
     client = RecordingClient(_response())
     backend = OpenAICompatibleCompletionBackend(client=client)

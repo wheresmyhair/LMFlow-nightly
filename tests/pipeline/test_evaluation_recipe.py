@@ -10,19 +10,18 @@ import pytest
 from lmflow.agentic.contracts import TaskSpec
 from lmflow.args import DatasetArguments, EvaluatorArguments, ModelArguments
 from lmflow.datasets import Dataset
-from lmflow.pipeline.evaluation import (
-    AgentCapability,
+from lmflow.pipeline.evaluation import Evaluator
+from lmflow.pipeline.evaluation.recipe import (
+    CapabilityProfile,
     EvaluationBudget,
-    EvaluationFailureType,
     EvaluationRecipe,
-    EvaluationSampleError,
     EvaluationTask,
-    EvaluationUsage,
     ModelRunOutput,
     SamplingConfig,
     VerificationOutcome,
 )
-from lmflow.pipeline.evaluator import Evaluator
+from lmflow.pipeline.evaluation.result import EvaluationFailureType, EvaluationSampleError, EvaluationUsage
+from lmflow.pipeline.evaluation.runtime import LocalEvaluationRuntime
 
 
 def _dataset() -> Dataset:
@@ -50,7 +49,7 @@ def _task_adapter(dataset: Dataset):
         )
 
 
-def _budget(*, max_concurrency: int = 1, max_model_calls: int = 2) -> EvaluationBudget:
+def _budget(*, max_model_calls: int = 2) -> EvaluationBudget:
     return EvaluationBudget(
         max_model_calls=max_model_calls,
         max_tool_calls=1,
@@ -58,7 +57,6 @@ def _budget(*, max_concurrency: int = 1, max_model_calls: int = 2) -> Evaluation
         max_input_tokens=128,
         max_output_tokens=32,
         wall_time_seconds=5,
-        max_concurrency=max_concurrency,
     )
 
 
@@ -77,11 +75,14 @@ class _Runner:
     def __init__(self, outputs=None):
         self.outputs = outputs or {"math:0": "2", "math:1": "wrong", "math:2": "6"}
         self.tasks = []
-        self.capabilities = []
+        self.capability_profiles = []
 
-    def run(self, model, task, *, capabilities, sampling, budget):
+    def scaffold_provenance(self):
+        return {"role": "reference", "id": "toy", "revision": "v1"}
+
+    def run(self, model, task, *, capability_profile, sampling, budget):
         self.tasks.append(task)
-        self.capabilities.append(capabilities)
+        self.capability_profiles.append(capability_profile)
         return ModelRunOutput(
             value=self.outputs[task.task_id],
             usage=EvaluationUsage(
@@ -102,7 +103,7 @@ def _recipe(*, budget=None, verifier=None) -> EvaluationRecipe:
     return EvaluationRecipe(
         name="toy-direct",
         task_adapter=_task_adapter,
-        capabilities=(AgentCapability(name="direct_answer"),),
+        capability_profile=CapabilityProfile(name="direct-answer"),
         sampling=SamplingConfig(temperature=0, top_p=1, seed=7),
         budget=budget or _budget(),
         verifier=verifier or _ExactVerifier(),
@@ -156,9 +157,16 @@ def test_recipe_path_preserves_simple_evaluator_entrypoint_and_hidden_verifier_b
     assert result.records[1].metrics == {"correctness": 0.0}
     assert result.records[2].artifact_ref == "artifacts/math:2.json"
     assert result.provenance.recipe["name"] == "toy-direct"
-    assert result.provenance.capabilities == ({"name": "direct_answer", "config": {}},)
+    assert result.provenance.capability_profile == {
+        "name": "direct-answer",
+        "affordances": [],
+        "config": {},
+    }
     assert result.provenance.model["model_name_or_path"] == "example/model"
     assert result.provenance.model["model_revision"] == "revision-1"
+    assert result.provenance.execution["runner"].endswith("._Runner")
+    assert result.provenance.execution["runtime"].endswith(".LocalEvaluationRuntime")
+    assert result.provenance.scaffold == {"role": "reference", "id": "toy", "revision": "v1"}
     assert result.provenance.dataset["dataset_type"] == "text2text"
     assert result.to_dict()["records"][0]["status"] == "completed"
 
@@ -173,14 +181,30 @@ def test_recipe_can_be_configured_on_evaluator_for_two_argument_entrypoint():
         runner=runner,
     )
 
-    result = evaluator.evaluate(object(), _dataset())
+    result = evaluator(object(), _dataset())
 
     assert result.summary["passed_samples"] == 2
     assert evaluator._legacy_initialized is False
 
 
+def test_evaluator_accepts_an_explicit_runtime_at_construction():
+    evaluator = Evaluator(
+        ModelArguments(model_name_or_path="example/model"),
+        DatasetArguments(dataset_path=None, dataset_name="toy"),
+        EvaluatorArguments(),
+        recipe=_recipe(),
+        runner=_Runner(),
+        runtime=LocalEvaluationRuntime(max_concurrency=2),
+    )
+
+    result = evaluator.evaluate(object(), _dataset())
+
+    assert result.provenance.execution["runtime"].endswith(".LocalEvaluationRuntime")
+    assert result.provenance.execution["runtime_config"]["max_concurrency"] == 2
+
+
 class _FailureRunner(_Runner):
-    def run(self, model, task, *, capabilities, sampling, budget):
+    def run(self, model, task, *, capability_profile, sampling, budget):
         if task.task_id == "math:0":
             raise EvaluationSampleError(EvaluationFailureType.INVALID_TOOL_CALL, "malformed calculator call")
         if task.task_id == "math:1":
@@ -188,7 +212,7 @@ class _FailureRunner(_Runner):
         return super().run(
             model,
             task,
-            capabilities=capabilities,
+            capability_profile=capability_profile,
             sampling=sampling,
             budget=budget,
         )
@@ -205,11 +229,11 @@ def test_recipe_isolates_structured_sample_failures_and_continues():
 
 
 class _OverBudgetRunner(_Runner):
-    def run(self, model, task, *, capabilities, sampling, budget):
+    def run(self, model, task, *, capability_profile, sampling, budget):
         output = super().run(
             model,
             task,
-            capabilities=capabilities,
+            capability_profile=capability_profile,
             sampling=sampling,
             budget=budget,
         )
@@ -244,7 +268,7 @@ class _ConcurrencyRunner(_Runner):
         self.maximum_active = 0
         self.lock = threading.Lock()
 
-    def run(self, model, task, *, capabilities, sampling, budget):
+    def run(self, model, task, *, capability_profile, sampling, budget):
         with self.lock:
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
@@ -253,7 +277,7 @@ class _ConcurrencyRunner(_Runner):
             return super().run(
                 model,
                 task,
-                capabilities=capabilities,
+                capability_profile=capability_profile,
                 sampling=sampling,
                 budget=budget,
             )
@@ -267,15 +291,16 @@ def test_recipe_bounds_concurrency_and_preserves_dataset_order():
     result = _evaluator().evaluate(
         object(),
         _dataset(),
-        recipe=_recipe(budget=_budget(max_concurrency=2)),
+        recipe=_recipe(),
         runner=runner,
+        runtime=LocalEvaluationRuntime(max_concurrency=2),
     )
 
     assert runner.maximum_active == 2
     assert [record.task_id for record in result.records] == ["math:0", "math:1", "math:2"]
 
 
-def test_recipe_requires_unique_task_ids_before_model_calls():
+def test_recipe_rejects_duplicate_task_ids_while_consuming_the_task_stream():
     runner = _Runner()
 
     def duplicate_tasks(dataset):
@@ -285,7 +310,7 @@ def test_recipe_requires_unique_task_ids_before_model_calls():
     recipe = EvaluationRecipe(
         name="duplicates",
         task_adapter=duplicate_tasks,
-        capabilities=(),
+        capability_profile=CapabilityProfile(name="direct-answer"),
         sampling=SamplingConfig(temperature=0, top_p=1, seed=0),
         budget=_budget(),
         verifier=_ExactVerifier(),
@@ -293,7 +318,7 @@ def test_recipe_requires_unique_task_ids_before_model_calls():
 
     with pytest.raises(ValueError, match="duplicate task_id"):
         _evaluator().evaluate(object(), _dataset(), recipe=recipe, runner=runner)
-    assert runner.tasks == []
+    assert [task.task_id for task in runner.tasks] == ["duplicate"]
 
 
 def test_legacy_metric_path_remains_available(monkeypatch):

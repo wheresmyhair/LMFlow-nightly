@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 from collections.abc import Mapping
 from typing import Any
 
-from lmflow.agentic.completion import CompletionBackend
+from lmflow.agentic.completion import (
+    CompletionBackend,
+    normalize_completion_response,
+    parse_function_arguments,
+)
 from lmflow.agentic.contracts import TaskSpec
 from lmflow.agentic.gsm8k import (
     GSM8K_AGENT_R1_REFERENCE_COMMIT,
@@ -18,42 +21,11 @@ from lmflow.agentic.gsm8k import (
 )
 
 
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant {value!r} is not allowed")
-
-
-def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key {key!r} is not allowed")
-        result[key] = value
-    return result
-
-
 def _json_copy(value: Any, *, name: str) -> Any:
     try:
         return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
     except (TypeError, ValueError) as error:
         raise TypeError(f"{name} must be JSON-compatible") from error
-
-
-def _parse_tool_arguments(value: Any, *, path: str) -> dict[str, Any]:
-    if not isinstance(value, str):
-        raise TypeError(f"{path} must be a JSON object string")
-    try:
-        parsed = json.loads(
-            value,
-            object_pairs_hook=_reject_duplicate_json_keys,
-            parse_constant=_reject_json_constant,
-        )
-    except json.JSONDecodeError as error:
-        raise ValueError(f"{path} must be strict JSON") from error
-    except ValueError as error:
-        raise ValueError(f"{path}: {error}") from error
-    if not isinstance(parsed, dict):
-        raise ValueError(f"{path} must decode to an object")
-    return parsed
 
 
 def _ground_truth_from_task(task: TaskSpec) -> str:
@@ -90,43 +62,6 @@ def _validate_task(task: TaskSpec) -> str:
     if tool_names != [GSM8K_REWARD_TOOL_NAME]:
         raise ValueError(f"task.tools must contain only {GSM8K_REWARD_TOOL_NAME!r}")
     return _ground_truth_from_task(task)
-
-
-def _normalize_completion(response: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(response, Mapping):
-        raise TypeError("completion backend must return a mapping")
-    message = response.get("message")
-    if not isinstance(message, Mapping):
-        raise TypeError("completion response must contain a message mapping")
-    if message.get("role") != "assistant":
-        raise ValueError("completion message role must be 'assistant'")
-
-    content = message.get("content")
-    if content is None:
-        content = ""
-    if not isinstance(content, str):
-        raise TypeError("completion message content must be a string or null")
-    reasoning_content = message.get("reasoning_content")
-    if reasoning_content is not None and not isinstance(reasoning_content, str):
-        raise TypeError("completion message reasoning_content must be a string or null")
-    tool_calls = message.get("tool_calls") or []
-    if not isinstance(tool_calls, list):
-        raise TypeError("completion message tool_calls must be a list")
-    if not content and not reasoning_content and not tool_calls:
-        raise ValueError("completion message must contain content, reasoning_content, or tool calls")
-
-    cost = response.get("cost", 0.0)
-    if isinstance(cost, bool) or not isinstance(cost, int | float) or not math.isfinite(cost) or cost < 0:
-        raise ValueError("completion response cost must be a finite non-negative number")
-
-    return {
-        "content": content,
-        "reasoning_content": reasoning_content,
-        "tool_calls": copy.deepcopy(tool_calls),
-        "finish_reason": _json_copy(response.get("finish_reason"), name="finish_reason"),
-        "cost": float(cost),
-        "raw_response": _json_copy(response.get("raw_response", response), name="raw_response"),
-    }
 
 
 def run_gsm8k_tool_episode(
@@ -183,7 +118,7 @@ def run_gsm8k_tool_episode(
             model_name=model_name,
             model_kwargs=copy.deepcopy(dict(model_kwargs)),
         )
-        completion = _normalize_completion(response)
+        completion = normalize_completion_response(response)
         completion_cost += completion["cost"]
         raw_tool_calls = completion["tool_calls"]
         atif_tool_calls = []
@@ -208,7 +143,7 @@ def run_gsm8k_tool_episode(
             if function_name != GSM8K_REWARD_TOOL_NAME:
                 raise ValueError(f"{path}.function.name must be {GSM8K_REWARD_TOOL_NAME!r}")
             arguments_text = function.get("arguments")
-            arguments = _parse_tool_arguments(arguments_text, path=f"{path}.function.arguments")
+            arguments = parse_function_arguments(arguments_text, path=f"{path}.function.arguments")
             observation, details = run_gsm8k_reward_tool(arguments, ground_truth=ground_truth)
 
             seen_call_ids.add(call_id)

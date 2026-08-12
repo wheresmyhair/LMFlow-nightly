@@ -2,7 +2,7 @@
 
 import unittest
 
-from lmflow.pipeline.evaluator import _nll_unsupported_dataset_message
+from lmflow.pipeline.evaluation.legacy import _nll_unsupported_dataset_message
 
 
 class TestEvaluatorMessages(unittest.TestCase):

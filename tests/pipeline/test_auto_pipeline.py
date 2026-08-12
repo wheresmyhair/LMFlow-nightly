@@ -1,9 +1,11 @@
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
 from lmflow.args import DatasetArguments, EvaluatorArguments, FinetunerArguments, InferencerArguments, ModelArguments
 from lmflow.pipeline.auto_pipeline import AutoPipeline
-from lmflow.pipeline.evaluator import Evaluator
+from lmflow.pipeline.evaluation import Evaluator
 from lmflow.pipeline.finetuner import Finetuner
 from lmflow.pipeline.inferencer import Inferencer
 
@@ -11,6 +13,25 @@ MODEL_NAME = "gpt2"
 
 
 class AutoPipelineTest(unittest.TestCase):
+    def test_evaluator_compatibility_import(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-W",
+                "always::DeprecationWarning",
+                "-c",
+                "from lmflow.pipeline.evaluator import Evaluator; print(Evaluator.__module__)",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("lmflow.pipeline.evaluator is deprecated", completed.stderr)
+        self.assertIn("lmflow.pipeline.evaluation.evaluator", completed.stdout)
+        self.assertEqual(Evaluator.__module__, "lmflow.pipeline.evaluation.evaluator")
+
     def test_get_evaluator_pipeline(self):
         model_args = ModelArguments(model_name_or_path=MODEL_NAME)
         dataset_args = DatasetArguments()
