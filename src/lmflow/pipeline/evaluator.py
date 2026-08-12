@@ -1,36 +1,30 @@
-"""
-The Evaluator class simplifies the process of running evaluation on a language model provided
-by a HFDecoderModel instance imported from the lmflow package. The class constructor takes three
-dictionaries as arguments: model_args containing arguments related to the language model,
-data_args containing arguments related to the data used for evaluation, and evaluator_args
-containing other arguments for the evaluation process.
+"""Default LMFlow evaluator with recipe-driven and legacy metric paths.
 
-The class has two methods: create_dataloader() that loads the data from the test file, creates
-a data loader, and returns it with the size of the data, and evaluate(model) that generates
-output text given input text. It uses the create_dataloader() method to load the data, iterates
-over the data in mini-batches, and encodes the input text with the encode() method of the
-HFDecoderModel class. Then, it generates output text using the evaluate() method of the HFDecoderModel
-class, decodes the generated output text using the decode() method of the HFDecoderModel class, and
-writes the output to a file in the output directory. The method also logs some information to the
-console and Weights and Biases if the use_wandb argument is True.
+Recipe-driven evaluation is the extensible orchestration boundary. Existing
+accuracy, perplexity, and negative-log-likelihood behavior remains available
+through a lazy legacy compatibility path.
 """
 
 import datetime
 import json
 import os
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 import torch.distributed as dist
-import wandb
-
-# TODO: remove later
-from accelerate import Accelerator
-from transformers import AutoConfig
 
 from lmflow.args import DatasetArguments, EvaluatorArguments, ModelArguments
 from lmflow.datasets.dataset import Dataset
 from lmflow.pipeline.base_pipeline import BasePipeline
+from lmflow.pipeline.evaluation import (
+    EvaluationRecipe,
+    EvaluationResult,
+    LegacyEvaluationRecipe,
+    ModelRunner,
+    evaluate_recipe,
+)
 from lmflow.utils.data_utils import answer_extraction, batchlize, set_random_seed
 from lmflow.utils.envs import is_accelerate_env, set_cuda_device
 from lmflow.utils.versioning import is_deepspeed_available
@@ -66,22 +60,43 @@ class Evaluator(BasePipeline):
         model_args: ModelArguments,
         data_args: DatasetArguments,
         evaluator_args: EvaluatorArguments,
+        *,
+        recipe: EvaluationRecipe | None = None,
+        runner: ModelRunner | None = None,
     ):
-        # our method
         self.data_args = data_args
         self.evaluator_args = evaluator_args
         self.model_args = model_args
+        self.recipe = recipe
+        self.runner = runner
+        self.accelerator = None
+        self.config = None
+        self.model_hidden_size = None
+        self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        self.world_size = int(os.getenv("WORLD_SIZE", "1"))
+        self.block_size = evaluator_args.evaluate_block_size
+        self._legacy_initialized = False
+        self._wandb = None
+
+    def _initialize_legacy_runtime(self) -> None:
+        """Initialize the distributed runtime used by legacy metric recipes."""
+
+        if self._legacy_initialized:
+            return
 
         # logger
         if self.evaluator_args.use_wandb:
-            wandb.init(project="lmflow_evaluation")
+            import wandb as wandb_module
+
+            self._wandb = wandb_module
+            self._wandb.init(project="lmflow_evaluation")
         # random seed
         set_random_seed(self.evaluator_args.random_seed)
-        self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        self.world_size = int(os.getenv("WORLD_SIZE", "1"))
         set_cuda_device(self.local_rank)
 
         if is_accelerate_env():
+            from accelerate import Accelerator
+
             self.accelerator = Accelerator()
             self.accelerator.wait_for_everyone()
         else:
@@ -91,7 +106,9 @@ class Evaluator(BasePipeline):
                 raise ImportError('Deepspeed is not available, please install using `pip install -e ".[deepspeed]"`')
             deepspeed.init_distributed()
 
-        self.config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+        from transformers import AutoConfig
+
+        self.config = AutoConfig.from_pretrained(self.model_args.model_name_or_path)
         try:
             self.model_hidden_size = self.config.hidden_size
         except Exception:
@@ -102,8 +119,7 @@ class Evaluator(BasePipeline):
         # batch size has to be divisible by world_size, but can be bigger than world_size
         train_batch_size = self.evaluator_args.inference_batch_size_per_device * self.world_size
         self.evaluator_args.minibatch_size = train_batch_size
-        self.block_size = evaluator_args.evaluate_block_size
-        # dataloader, data_size = create_dataloader(args)    # load dataset
+        self._legacy_initialized = True
 
     def create_dataloader(self, dataset: Dataset):
         data_dict = dataset.to_dict()
@@ -145,6 +161,9 @@ class Evaluator(BasePipeline):
         dataset: Dataset,
         metric="accuracy",
         verbose=True,
+        *,
+        recipe: EvaluationRecipe | None = None,
+        runner: ModelRunner | None = None,
     ):
         """
         Perform Evaluation for a model
@@ -156,25 +175,87 @@ class Evaluator(BasePipeline):
 
         dataset : Dataset object.
 
+        recipe : EvaluationRecipe, optional.
+            Recipe-driven evaluation contract. ``runner`` is required when
+            this value is provided.
+
+        runner : ModelRunner, optional.
+            Executes model-visible tasks for a recipe and may delegate to a
+            shared Agentic episode executor.
 
         """
-        if metric in ["acc", "accuracy"]:
+        selected_recipe = recipe if recipe is not None else self.recipe
+        selected_runner = runner if runner is not None else self.runner
+        if selected_recipe is not None:
+            if selected_runner is None:
+                raise ValueError("runner is required when recipe is provided")
+            return self._evaluate_recipe(
+                model=model,
+                dataset=dataset,
+                recipe=selected_recipe,
+                runner=selected_runner,
+            )
+        if selected_runner is not None:
+            raise ValueError("recipe is required when runner is provided")
+
+        legacy_recipe = LegacyEvaluationRecipe(metric=metric)
+        self._initialize_legacy_runtime()
+        if legacy_recipe.metric in ["acc", "accuracy"]:
             if is_accelerate_env():
                 acc = self._evaluate_acc_with_accelerate(model, dataset, verbose=verbose)
             else:
                 acc = self._evaluate_acc_with_deepspeed(model, dataset, verbose=verbose)
             print(f"Evaluating final accuracy: {acc}")
             return acc
-        elif metric in ["ppl", "perplexity"]:
+        elif legacy_recipe.metric in ["ppl", "perplexity"]:
             ppl = self._evaluate_ppl(model, dataset, verbose=verbose)
             print(f"Evaluating final perplexity: {ppl}")
             return ppl
-        elif metric in ["nll", "neg_log_likelihood"]:
+        else:
             nll = self._evaluate_nll(model, dataset, verbose=verbose)
             print(f"Evaluating final negative log likelihood: {nll}")
             return nll
-        else:
-            raise NotImplementedError(f"metric {metric} is not supported")
+
+    def _evaluate_recipe(
+        self,
+        *,
+        model: Any,
+        dataset: Dataset,
+        recipe: EvaluationRecipe,
+        runner: ModelRunner,
+    ) -> EvaluationResult:
+        """Run a recipe without initializing the legacy distributed runtime."""
+
+        model_provenance = {
+            "model_name_or_path": self.model_args.model_name_or_path,
+            "model_revision": self.model_args.model_revision,
+            "tokenizer_name": self.model_args.tokenizer_name,
+            "lora_model_path": self.model_args.lora_model_path,
+        }
+        dataset_path = self.data_args.dataset_path
+        dataset_provenance = {
+            "dataset_type": dataset.get_type(),
+            "dataset_name": self.data_args.dataset_name,
+            "dataset_config_name": self.data_args.dataset_config_name,
+            "dataset_path": None if dataset_path is None else str(Path(dataset_path)),
+            "dataset_fingerprint": self._dataset_fingerprint(dataset),
+        }
+        return evaluate_recipe(
+            recipe,
+            runner,
+            model,
+            dataset,
+            model_provenance=model_provenance,
+            dataset_provenance=dataset_provenance,
+        )
+
+    @staticmethod
+    def _dataset_fingerprint(dataset: Dataset) -> str | None:
+        try:
+            fingerprint = dataset.get_fingerprint()
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return fingerprint if isinstance(fingerprint, str) else None
 
     def _evaluate_acc_with_accelerate(self, model, dataset, verbose=True):
         dataloader, data_size = self.create_dataloader(dataset)
@@ -270,7 +351,7 @@ class Evaluator(BasePipeline):
                 )
 
                 if self.evaluator_args.use_wandb:
-                    wandb.log({"Accuracy": current_accuracy})
+                    self._wandb.log({"Accuracy": current_accuracy})
 
                 for index, output in enumerate(all_process_list):
                     output_json = json.dumps(output)
@@ -374,7 +455,7 @@ class Evaluator(BasePipeline):
                 )
 
                 if self.evaluator_args.use_wandb:
-                    wandb.log({"Accuracy": current_accuracy})
+                    self._wandb.log({"Accuracy": current_accuracy})
 
                 for index, output in enumerate(all_process_list):
                     output_json = json.dumps(output)
