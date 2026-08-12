@@ -123,6 +123,34 @@ def _log_dataset_size(dataset, split_name: str, log=logger.warning):
         log("Number of %s samples: %d", split_name, sample_count)
 
 
+def _save_finetuned_model(trainer, model, model_args, finetuner_args):
+    """Save a reloadable final model or adapter after training.
+
+    An FSDP-wrapped PEFT model must be exported through ``Trainer.save_model``
+    so Accelerate can gather the configured full state dict before PEFT keeps
+    only adapter weights. Calling ``PeftModel.save_pretrained`` directly on the
+    sharded module can otherwise publish an incomplete adapter.
+    """
+    if not model_args.use_lora:
+        trainer.save_model()
+        return
+
+    if model_args.save_aggregated_lora:
+        if trainer.is_fsdp_enabled:
+            raise ValueError(
+                "save_aggregated_lora is not supported under FSDP; save the adapter first and merge it with the "
+                "base model in a separate non-sharded process."
+            )
+        model.merge_lora_weights()
+        model.save(finetuner_args.output_dir, save_full_model=True)
+        return
+
+    if trainer.is_fsdp_enabled:
+        trainer.save_model()
+    else:
+        model.save(finetuner_args.output_dir, save_full_model=False)
+
+
 class Finetuner(BaseTuner):
     """
     Initializes the `Finetuner` class with given arguments.
@@ -498,12 +526,7 @@ class Finetuner(BaseTuner):
                 checkpoint = last_checkpoint
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
 
-            if not model_args.use_lora:
-                trainer.save_model()  # Saves the tokenizer too for easy upload
-            else:
-                if model_args.save_aggregated_lora:
-                    model.merge_lora_weights()
-                model.save(finetuner_args.output_dir, model_args.save_aggregated_lora)
+            _save_finetuned_model(trainer, model, model_args, finetuner_args)
             # save language_projection for multi-modal model;
             if self.finetuner_args.save_language_projection:
                 language_projection_state = trainer.model.language_projection.state_dict()
