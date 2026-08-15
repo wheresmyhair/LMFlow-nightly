@@ -12,6 +12,19 @@ _RESERVED_REQUEST_KEYS = frozenset({"messages", "model", "tools"})
 _CLIENT_ONLY_REQUEST_KEYS = frozenset({"extra_headers"})
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r} is not allowed")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r} is not allowed")
+        result[key] = value
+    return result
+
+
 class CompletionBackend(Protocol):
     """Synchronous chat-completion boundary shared by Agentic scaffolds."""
 
@@ -47,6 +60,72 @@ def _json_mapping(value: Any, *, name: str) -> dict[str, Any]:
     except (TypeError, ValueError) as error:
         raise TypeError(f"{name} must be JSON-compatible") from error
     return payload
+
+
+def _json_copy(value: Any, *, name: str) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be JSON-compatible") from error
+
+
+def parse_function_arguments(value: Any, *, path: str = "function.arguments") -> dict[str, Any]:
+    """Parse one strict JSON object used as function-call arguments."""
+
+    if not isinstance(value, str):
+        raise TypeError(f"{path} must be a JSON object string")
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} must be strict JSON") from error
+    except ValueError as error:
+        raise ValueError(f"{path}: {error}") from error
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{path} must decode to an object")
+    return parsed
+
+
+def normalize_completion_response(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the shared single-choice completion backend response."""
+
+    if not isinstance(response, Mapping):
+        raise TypeError("completion backend must return a mapping")
+    message = response.get("message")
+    if not isinstance(message, Mapping):
+        raise TypeError("completion response must contain a message mapping")
+    if message.get("role") != "assistant":
+        raise ValueError("completion message role must be 'assistant'")
+
+    content = message.get("content")
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        raise TypeError("completion message content must be a string or null")
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content is not None and not isinstance(reasoning_content, str):
+        raise TypeError("completion message reasoning_content must be a string or null")
+    tool_calls = message.get("tool_calls") or []
+    if not isinstance(tool_calls, list):
+        raise TypeError("completion message tool_calls must be a list")
+    if not content and not reasoning_content and not tool_calls:
+        raise ValueError("completion message must contain content, reasoning_content, or tool calls")
+
+    cost = response.get("cost", 0.0)
+    if isinstance(cost, bool) or not isinstance(cost, int | float) or not math.isfinite(cost) or cost < 0:
+        raise ValueError("completion response cost must be a finite non-negative number")
+
+    return {
+        "content": content,
+        "reasoning_content": reasoning_content,
+        "tool_calls": copy.deepcopy(tool_calls),
+        "finish_reason": _json_copy(response.get("finish_reason"), name="finish_reason"),
+        "cost": float(cost),
+        "raw_response": _json_copy(response.get("raw_response", response), name="raw_response"),
+    }
 
 
 class OpenAICompatibleCompletionBackend:
@@ -141,11 +220,15 @@ class OpenAICompatibleCompletionBackend:
         if isinstance(n, bool) or not isinstance(n, int) or n != 1:
             raise ValueError("model_kwargs.n must be exactly 1")
 
-        response = self._client.chat.completions.create(
-            model=model_name,
-            messages=copy.deepcopy(messages),
-            tools=copy.deepcopy(tools),
+        request = {
+            "model": model_name,
+            "messages": copy.deepcopy(messages),
             **request_options,
+        }
+        if tools:
+            request["tools"] = copy.deepcopy(tools)
+        response = self._client.chat.completions.create(
+            **request,
         )
         choices = _field(response, "choices")
         if isinstance(choices, str | bytes) or not isinstance(choices, Sequence):
@@ -178,4 +261,9 @@ class OpenAICompatibleCompletionBackend:
         self.close()
 
 
-__all__ = ["CompletionBackend", "OpenAICompatibleCompletionBackend"]
+__all__ = [
+    "CompletionBackend",
+    "OpenAICompatibleCompletionBackend",
+    "normalize_completion_response",
+    "parse_function_arguments",
+]

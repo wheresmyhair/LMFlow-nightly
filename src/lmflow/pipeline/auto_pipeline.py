@@ -1,12 +1,17 @@
 #!/usr/bin/env python
 """Return a pipeline automatically based on its name."""
 
-from lmflow.pipeline.evaluator import Evaluator
+from lmflow.pipeline.evaluation import Evaluator
 from lmflow.pipeline.finetuner import Finetuner
 from lmflow.pipeline.inferencer import Inferencer
 from lmflow.pipeline.rm_inferencer import RewardModelInferencer
 from lmflow.pipeline.rm_tuner import RewardModelTuner
-from lmflow.utils.versioning import is_package_version_at_least, is_sglang_available, is_trl_available, is_vllm_available
+from lmflow.utils.versioning import (
+    is_package_version_at_least,
+    is_sglang_available,
+    is_trl_available,
+    is_vllm_available,
+)
 
 PIPELINE_MAPPING = {
     "evaluator": Evaluator,
@@ -19,6 +24,7 @@ PIPELINE_NEEDS_EXTRAS = []
 
 if is_sglang_available():
     from lmflow.pipeline.sglang_inferencer import SGLangInferencer
+
     PIPELINE_MAPPING["sglang_inferencer"] = SGLangInferencer
 else:
     PIPELINE_NEEDS_EXTRAS.append("sglang_inferencer")
