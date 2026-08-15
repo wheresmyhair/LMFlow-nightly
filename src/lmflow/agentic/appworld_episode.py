@@ -165,16 +165,6 @@ def _failure_type(*, official_success: bool, termination_reason: str, invalid_ac
     return "incomplete"
 
 
-def _default_world_factory(**kwargs: Any) -> Any:
-    try:
-        from appworld import AppWorld
-    except ImportError as error:
-        raise ImportError(
-            "AppWorld is unavailable; synchronize the agentic lock and run scripts/agentic/bootstrap_appworld.sh"
-        ) from error
-    return AppWorld(**kwargs)
-
-
 def configure_appworld_freezegun() -> None:
     """Keep AppWorld's task clock from traversing vLLM's lazy modules."""
 
@@ -183,6 +173,17 @@ def configure_appworld_freezegun() -> None:
     except ImportError as error:
         raise ImportError("freezegun is unavailable; synchronize the pinned AppWorld runtime dependencies") from error
     configure(extend_ignore_list=list(_FREEZEGUN_IGNORE_PREFIXES))
+
+
+def _default_world_factory(**kwargs: Any) -> Any:
+    configure_appworld_freezegun()
+    try:
+        from appworld import AppWorld
+    except ImportError as error:
+        raise ImportError(
+            "AppWorld is unavailable; synchronize the agentic lock and run scripts/agentic/bootstrap_appworld.sh"
+        ) from error
+    return AppWorld(**kwargs)
 
 
 def run_appworld_episode(
@@ -226,7 +227,6 @@ def run_appworld_episode(
     prompt = load_reference_prompt(appworld_source)
     scaffold = scaffold_identity(appworld_source)
     factory = world_factory or _default_world_factory
-    configure_appworld_freezegun()
 
     started_at = _monotonic_clock()
     init_started_at = _monotonic_clock()

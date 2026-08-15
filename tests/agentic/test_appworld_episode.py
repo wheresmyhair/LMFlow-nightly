@@ -85,6 +85,14 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
         "lmflow.agentic.appworld_episode.scaffold_identity",
         lambda source: {"id": "fake-reference", "prompt_sha256": "0" * 64},
     )
+
+    def unexpected_freezegun_configure():
+        raise AssertionError("custom world factories must not require AppWorld dependencies")
+
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.configure_appworld_freezegun",
+        unexpected_freezegun_configure,
+    )
     world = FakeWorld(tmp_path)
 
     def factory(**kwargs):
