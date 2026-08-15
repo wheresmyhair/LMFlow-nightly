@@ -41,3 +41,41 @@ and rerun training, FSDP2, checkpoint, and vLLM smoke tests.
 
 `bitsandbytes`, `flash-attn`, and `cpm_kernels` remain outside the default
 profile until their combinations receive separate compatibility checks.
+
+## AppWorld source and data
+
+The lock includes the runtime and build dependencies declared by AppWorld
+commit `a072b7a86e7c1d5b1d7175659d750ebb9b79f10a`. The AppWorld distribution
+itself is installed in a second, deterministic step because its protected
+source bundles are Git LFS objects and a VCS requirement cannot satisfy the
+environment's `--require-hashes` policy.
+
+After synchronizing the same agentic environment, run:
+
+```bash
+scripts/agentic/bootstrap_appworld.sh \
+  --python .venvs/agentic/bin/python \
+  --root "${XDG_CACHE_HOME:-${HOME}/.cache}/lmflow-agent/appworld-root-0.2.0-a072b7a"
+```
+
+The script checks the exact Git revision and all four LFS bundle digests,
+installs AppWorld with `--no-deps --no-build-isolation`, unpacks its protected
+application code, and downloads data version `0.2.0`. It prints the resulting
+`APPWORLD_SOURCE` and `APPWORLD_ROOT` paths. Validate that installation with:
+
+```bash
+python -m lmflow.agentic.evaluate_appworld verify \
+  --appworld-source "$APPWORLD_SOURCE" \
+  --appworld-root "$APPWORLD_ROOT"
+```
+
+The stable `0.1.3.post1` package requires Pydantic 1, while the pinned source
+revision supports Python 3.12 and Pydantic 2. `appworld-agents` is deliberately
+excluded because its current OpenAI cap would downgrade the unified agentic
+environment. LMFlow uses the verified official Simplified ReAct Code prompt
+and loop semantics through a benchmark-local completion adapter.
+
+AppWorld's protected tasks, databases, ground truth, verifier code, and raw
+task artifacts must remain outside Git. Public redistribution must follow the
+restrictions in the downloaded AppWorld data license; model training and local
+evaluation do not make those files repository inputs.
