@@ -12,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -41,6 +42,8 @@ GSM8K_CALCULATOR_CAPABILITY = "calculator"
 GSM8K_CALCULATOR_TOOL_NAME = "calculate"
 GSM8K_DIRECT_RECIPE_NAME = "gsm8k-direct-answer-v1"
 GSM8K_CALCULATOR_RECIPE_NAME = "gsm8k-calculator-v1"
+GSM8K_NUMERIC_DIRECT_RECIPE_NAME = "gsm8k-direct-answer-v2"
+GSM8K_NUMERIC_CALCULATOR_RECIPE_NAME = "gsm8k-calculator-v2"
 GSM8K_REFERENCE_SCAFFOLD = {
     "role": "reference",
     "id": "lmflow.gsm8k.chat-completions",
@@ -157,6 +160,23 @@ def _gold_answer(solution: str) -> str:
     return answer
 
 
+def _score_numeric_answer(
+    solution: str,
+    gold_answer: str,
+    *,
+    method: Literal["strict", "flexible"],
+) -> float:
+    candidate = extract_gsm8k_answer(solution, method=method)
+    if candidate is None:
+        return 0.0
+    try:
+        candidate_number = Decimal(candidate.replace(",", ""))
+        gold_number = Decimal(gold_answer.replace(",", ""))
+    except InvalidOperation:
+        return 0.0
+    return float(candidate_number == gold_number)
+
+
 def _validate_recipe_identity(*, split: str, data_source: str) -> None:
     if not isinstance(split, str) or not split.strip():
         raise ValueError("split must be a non-empty string")
@@ -169,10 +189,12 @@ class _GSM8KTaskAdapter:
     mode: Literal["direct", "calculator"]
     split: str
     data_source: str
+    require_canonical_ids: bool = False
 
     def __call__(self, dataset: Any) -> Iterable[EvaluationTask]:
         if not callable(getattr(dataset, "to_list", None)):
             raise TypeError("GSM8K evaluation requires a Dataset-compatible object with to_list()")
+        seen_instance_ids: set[str] = set()
         for index, row in enumerate(dataset.to_list()):
             if not isinstance(row, Mapping):
                 raise TypeError(f"GSM8K dataset row {index} must be a mapping")
@@ -185,8 +207,35 @@ class _GSM8KTaskAdapter:
             gold_answer = _gold_answer(solution)
             system_prompt = GSM8K_DIRECT_SYSTEM_PROMPT if self.mode == "direct" else GSM8K_CALCULATOR_SYSTEM_PROMPT
             tools = [] if self.mode == "direct" else [copy.deepcopy(GSM8K_CALCULATOR_TOOL)]
+            instance_id = row.get("instance_id")
+            if instance_id is None:
+                if self.require_canonical_ids:
+                    raise ValueError(f"GSM8K dataset row {index} must contain a canonical instance_id")
+                instance_id = f"{self.data_source}:{self.split}:{index}"
+            if not isinstance(instance_id, str) or not instance_id.strip():
+                raise ValueError(f"GSM8K dataset row {index} instance_id must be a non-empty string")
+            if instance_id in seen_instance_ids:
+                raise ValueError(f"GSM8K dataset row {index} repeats instance_id {instance_id!r}")
+            seen_instance_ids.add(instance_id)
+            if self.require_canonical_ids and "source_index" not in row:
+                raise ValueError(f"GSM8K dataset row {index} must contain source_index with a canonical instance_id")
+            source_index = row.get("source_index", index)
+            if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                raise ValueError(f"GSM8K dataset row {index} source_index must be a non-negative integer")
+            row_digest = row.get("row_digest")
+            if row_digest is not None and (not isinstance(row_digest, str) or not row_digest.strip()):
+                raise ValueError(f"GSM8K dataset row {index} row_digest must be a non-empty string when provided")
+            if self.require_canonical_ids and row_digest is None:
+                raise ValueError(f"GSM8K dataset row {index} must contain row_digest with a canonical instance_id")
+            if self.require_canonical_ids:
+                try:
+                    valid_row_digest = len(row_digest) == 64 and int(row_digest, 16) >= 0
+                except ValueError:
+                    valid_row_digest = False
+                if not valid_row_digest:
+                    raise ValueError(f"GSM8K dataset row {index} row_digest must be a SHA-256")
             task = TaskSpec(
-                task_id=f"{self.data_source}:{self.split}:{index}",
+                task_id=instance_id,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": GSM8K_USER_PROMPT.format(question=question)},
@@ -196,7 +245,10 @@ class _GSM8KTaskAdapter:
                 metadata={
                     "data_source": self.data_source,
                     "split": self.split,
-                    "index": index,
+                    "index": source_index,
+                    "source_index": source_index,
+                    "identity_scope": "canonical_source" if "instance_id" in row else "materialized_order",
+                    **({"row_digest": row_digest} if row_digest is not None else {}),
                 },
             )
             yield EvaluationTask(
@@ -207,6 +259,11 @@ class _GSM8KTaskAdapter:
 
 class GSM8KVerifier:
     """Hidden GSM8K verifier shared by the direct and calculator recipes."""
+
+    def __init__(self, *, correctness: Literal["agent-r1-exact", "numeric-equivalence"] = "agent-r1-exact"):
+        if correctness not in {"agent-r1-exact", "numeric-equivalence"}:
+            raise ValueError("correctness must be agent-r1-exact or numeric-equivalence")
+        self.correctness = correctness
 
     def verify(self, task: TaskSpec, output: ModelRunOutput, *, verifier_material: Any) -> VerificationOutcome:
         if not isinstance(verifier_material, Mapping):
@@ -226,29 +283,47 @@ class GSM8KVerifier:
         if not isinstance(attempts, list):
             raise TypeError("GSM8K model output attempts must be a list")
 
-        final_correct = score_gsm8k_answer(final_response, gold_answer, method="flexible")
-        strict_correct = score_gsm8k_answer(final_response, gold_answer, method="strict")
+        reference_exact_correct = score_gsm8k_answer(final_response, gold_answer, method="flexible")
+        strict_exact_correct = score_gsm8k_answer(final_response, gold_answer, method="strict")
+        if self.correctness == "numeric-equivalence":
+            final_correct = _score_numeric_answer(final_response, gold_answer, method="flexible")
+            strict_correct = _score_numeric_answer(final_response, gold_answer, method="strict")
+        else:
+            final_correct = reference_exact_correct
+            strict_correct = strict_exact_correct
         attempt_scores = []
         for index, attempt in enumerate(attempts):
             if not isinstance(attempt, Mapping) or not isinstance(attempt.get("answer"), str):
                 raise TypeError(f"GSM8K model output attempts[{index}] must contain a string answer")
-            attempt_scores.append(score_gsm8k_answer(attempt["answer"], gold_answer, method="flexible"))
+            if self.correctness == "numeric-equivalence":
+                attempt_score = _score_numeric_answer(attempt["answer"], gold_answer, method="flexible")
+            else:
+                attempt_score = score_gsm8k_answer(attempt["answer"], gold_answer, method="flexible")
+            attempt_scores.append(attempt_score)
         first_attempt_success = attempt_scores[0] if attempt_scores else final_correct
         tool_calls = output.usage.tool_calls
         tool_compliance = float(tool_calls == 0 if mode == "direct" else tool_calls > 0)
         direct_answer_fallback = float(mode == "calculator" and tool_calls == 0)
         recovery = float(final_correct == 1.0 and first_attempt_success == 0.0)
 
+        metrics = {
+            "final_correctness": final_correct,
+            "strict_correctness": strict_correct,
+            "tool_compliance": tool_compliance,
+            "first_attempt_success": first_attempt_success,
+            "recovery": recovery,
+            "direct_answer_fallback": direct_answer_fallback,
+            "tool_error": float(output.value.get("tool_errors", 0) > 0),
+        }
+        if self.correctness == "numeric-equivalence":
+            metrics.update(
+                {
+                    "reference_exact_correctness": reference_exact_correct,
+                    "strict_exact_correctness": strict_exact_correct,
+                }
+            )
         return VerificationOutcome(
-            metrics={
-                "final_correctness": final_correct,
-                "strict_correctness": strict_correct,
-                "tool_compliance": tool_compliance,
-                "first_attempt_success": first_attempt_success,
-                "recovery": recovery,
-                "direct_answer_fallback": direct_answer_fallback,
-                "tool_error": float(output.value.get("tool_errors", 0) > 0),
-            },
+            metrics=metrics,
             passed=final_correct == 1.0,
             metadata={
                 "final_answer": extract_gsm8k_answer(final_response, method="flexible"),
@@ -286,25 +361,37 @@ def create_gsm8k_direct_recipe(
     data_source: str = GSM8K_DATA_SOURCE,
     sampling: SamplingConfig | None = None,
     budget: EvaluationBudget | None = None,
+    require_canonical_ids: bool = False,
+    correctness: Literal["agent-r1-exact", "numeric-equivalence"] = "agent-r1-exact",
 ) -> EvaluationRecipe:
     """Create the held-out direct-answer recipe."""
 
     _validate_recipe_identity(split=split, data_source=data_source)
+    if not isinstance(require_canonical_ids, bool):
+        raise TypeError("require_canonical_ids must be a boolean")
+    if correctness not in {"agent-r1-exact", "numeric-equivalence"}:
+        raise ValueError("correctness must be agent-r1-exact or numeric-equivalence")
     sampling = sampling or SamplingConfig(temperature=0.0, top_p=1.0, seed=0)
     budget = budget or _default_direct_budget()
     return EvaluationRecipe(
-        name=GSM8K_DIRECT_RECIPE_NAME,
-        task_adapter=_GSM8KTaskAdapter(mode="direct", split=split, data_source=data_source),
+        name=GSM8K_NUMERIC_DIRECT_RECIPE_NAME if correctness == "numeric-equivalence" else GSM8K_DIRECT_RECIPE_NAME,
+        task_adapter=_GSM8KTaskAdapter(
+            mode="direct",
+            split=split,
+            data_source=data_source,
+            require_canonical_ids=require_canonical_ids,
+        ),
         capability_profile=CapabilityProfile(name="direct-answer"),
         sampling=sampling,
         budget=budget,
-        verifier=GSM8KVerifier(),
+        verifier=GSM8KVerifier(correctness=correctness),
         metadata={
             "benchmark": "GSM8K",
             "protocol": "direct-answer",
             "split": split,
             "data_source": data_source,
             "gold_visibility": "hidden_verifier_only",
+            "correctness": correctness,
         },
     )
 
@@ -316,17 +403,32 @@ def create_gsm8k_calculator_recipe(
     sampling: SamplingConfig | None = None,
     budget: EvaluationBudget | None = None,
     require_tool_use: bool = False,
+    require_canonical_ids: bool = False,
+    correctness: Literal["agent-r1-exact", "numeric-equivalence"] = "agent-r1-exact",
 ) -> EvaluationRecipe:
     """Create the held-out arithmetic-calculator recipe."""
 
     _validate_recipe_identity(split=split, data_source=data_source)
     if not isinstance(require_tool_use, bool):
         raise TypeError("require_tool_use must be a boolean")
+    if not isinstance(require_canonical_ids, bool):
+        raise TypeError("require_canonical_ids must be a boolean")
+    if correctness not in {"agent-r1-exact", "numeric-equivalence"}:
+        raise ValueError("correctness must be agent-r1-exact or numeric-equivalence")
     sampling = sampling or SamplingConfig(temperature=0.0, top_p=1.0, seed=0)
     budget = budget or _default_calculator_budget()
     return EvaluationRecipe(
-        name=GSM8K_CALCULATOR_RECIPE_NAME,
-        task_adapter=_GSM8KTaskAdapter(mode="calculator", split=split, data_source=data_source),
+        name=(
+            GSM8K_NUMERIC_CALCULATOR_RECIPE_NAME
+            if correctness == "numeric-equivalence"
+            else GSM8K_CALCULATOR_RECIPE_NAME
+        ),
+        task_adapter=_GSM8KTaskAdapter(
+            mode="calculator",
+            split=split,
+            data_source=data_source,
+            require_canonical_ids=require_canonical_ids,
+        ),
         capability_profile=CapabilityProfile(
             name="gsm8k-calculator",
             affordances=(GSM8K_CALCULATOR_CAPABILITY,),
@@ -339,13 +441,14 @@ def create_gsm8k_calculator_recipe(
         ),
         sampling=sampling,
         budget=budget,
-        verifier=GSM8KVerifier(),
+        verifier=GSM8KVerifier(correctness=correctness),
         metadata={
             "benchmark": "GSM8K",
             "protocol": "calculator-tool",
             "split": split,
             "data_source": data_source,
             "gold_visibility": "hidden_verifier_only",
+            "correctness": correctness,
         },
     )
 
