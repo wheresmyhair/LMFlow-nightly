@@ -2,6 +2,7 @@
 # Python 3.12 / Linux x86_64 / CUDA 13.0.
 # LMFlow itself is installed editable with --no-deps after synchronization.
 accelerate==1.14.0
+-r appworld-a072b7a-runtime.in
 datasets==5.0.1
 einops==0.8.2
 evaluate==0.4.6
