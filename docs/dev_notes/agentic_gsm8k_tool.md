@@ -103,6 +103,113 @@ This runner is for data construction and evaluation through an OpenAI-compatible
 control plane. It does not provide sampled token IDs or log-probabilities and
 cannot serve as the token-native rollout source for online GRPO.
 
+## Pinned direct/calculator evaluation protocol
+
+The decision baseline uses the official `openai/gsm8k` `main` configuration at
+revision `740312add88f781978c0658806c59bc2815b9866`. It assigns every row a
+canonical instance identity containing the dataset revision, source split, and
+original source index. Subsetting and shuffling therefore do not change task
+identity. Each dataset manifest contains the ordered identities, source indices,
+row-content hashes, source-content hash, current LMFlow Dataset fingerprint, and
+a digest over the complete manifest. It contains no question, solution, or gold
+answer text.
+
+The protocol reserves 512 deterministically hash-ranked official training rows
+for `development`; `training` is the other 6,961 rows in source order. The
+official 1,319-row test split is held out from data construction. Its bounded
+evaluation views are nested: `smoke` (16 rows), `repeat` (128 rows), and
+`decision` (512 rows). `heldout` evaluates all 1,319 test rows in canonical
+source order. The split seed and selection algorithm are part of the dataset
+manifest.
+
+Run both the direct-answer and arithmetic-calculator conditions against an
+already running OpenAI-compatible vLLM endpoint:
+
+```bash
+python -m lmflow.agentic.evaluate_gsm8k run \
+  --artifact-dir artifacts/gsm8k-base-smoke-seed0 \
+  --run-id gsm8k-base-smoke-seed0 \
+  --base-url http://127.0.0.1:8000/v1 \
+  --served-model-name Qwen/Qwen3-8B \
+  --tokenizer-path /path/to/pinned/Qwen3-8B \
+  --backend-version 0.25.1 \
+  --served-max-model-len 16384 \
+  --served-dtype bfloat16 \
+  --tool-call-parser qwen3_xml \
+  --reasoning-parser qwen3 \
+  --generation-config vllm \
+  --served-model-runner v1 \
+  --tensor-parallel-size 1 \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 4 \
+  --split smoke \
+  --sampling-seed 0 \
+  --max-concurrency 2
+```
+
+The fixed primary behavior is Qwen3 thinking enabled, temperature 0.6,
+top-p 0.95, top-k 20, and min-p 0. The direct profile permits one model call;
+the calculator profile permits up to four model and calculator calls. Both use
+the same hidden verifier, and the calculator exposes arithmetic results only.
+The reward tool and gold correctness feedback are absent from this held-out
+protocol. The endpoint URL and local tokenizer path are used at runtime but are
+not persisted; the report retains the served model name, model and tokenizer
+revisions, tokenizer/config/chat-template hashes, backend identity and version,
+provider behavior, prompts, tool schema, budgets, and sampling seed. Supply
+`--model-artifact-sha256` when evaluating an unpublished SFT or GRPO adapter so
+its identity does not depend on a machine path.
+
+Each successful run is published atomically:
+
+```text
+gsm8k-base-smoke-seed0/
+  dataset_manifest.json
+  run_manifest.json
+  report.json
+  profiles/
+    direct-answer/
+      result.json
+      records/*.json
+    calculator-tool/
+      result.json
+      records/*.json
+```
+
+`report.json` treats failed or timed-out samples as unsuccessful for end-to-end
+pass and binary metric rates. The pinned baseline selects the v2 verifier:
+`final_correctness` and `strict_correctness` use
+decimal numeric equivalence, so representations such as `2`, `2.0`, and `2.00`
+agree; `reference_exact_correctness` and `strict_exact_correctness` retain the
+Agent-R1 string-equality view for compatibility. The existing v1 recipe factory
+default retains Agent-R1 exact scoring for callers that need historical
+behavior; the run manifest and recipe provenance record the selected rule. The
+report also includes completed-only metric means,
+Wilson 95% intervals, failure categories, usage totals, latency p50/p95, and a
+paired bootstrap interval for calculator-minus-direct correctness. Aggregate
+repeat variation only across compatible run directories:
+
+```bash
+python -m lmflow.agentic.evaluate_gsm8k summarize \
+  artifacts/gsm8k-base-repeat-seed1 \
+  artifacts/gsm8k-base-repeat-seed2 \
+  --output artifacts/gsm8k-base-repeat-summary.json
+```
+
+The generic Evaluator currently records runner implementation and runtime but
+does not retain provider-specific runner/backend behavior such as vLLM `top_k`,
+`min_p`, thinking mode, or served backend version. The GSM8K run manifest is the
+authoritative provenance record for these fields until the Evaluator gains a
+narrow optional runner-provenance mapping. Cross-run confidence intervals and
+latency quantiles remain in this benchmark report layer; broader report
+abstractions should wait for evidence from another benchmark.
+
+Official GSM8K is common in model pretraining data, so a strong held-out score
+does not by itself establish uncontaminated mathematical generalization. Use the
+baseline as a capability-headroom and system-correctness gate. If direct
+correctness is already at least 95%, calculator-minus-direct is below two
+percentage points, and fewer than 5% of cases expose a trainable tool/recovery
+gap, keep GSM8K to bounded SFT/GRPO correctness smokes and regression coverage.
+
 ## Qwen3-8B cold-start SFT
 
 The generated `dataset/` directory is directly consumable by LMFlow's existing

@@ -97,6 +97,23 @@ def _dataset():
     )
 
 
+def _canonical_dataset():
+    return Dataset.create_from_dict(
+        {
+            "type": "text2text",
+            "instances": [
+                {
+                    "input": "A shelf has 18 books and receives 7 more. How many books are there?",
+                    "output": "Add the quantities. #### 25",
+                    "instance_id": "openai/gsm8k@revision/main/test/0000042",
+                    "source_index": 42,
+                    "row_digest": "a" * 64,
+                }
+            ],
+        }
+    )
+
+
 def _evaluator():
     return Evaluator(
         ModelArguments(model_name_or_path="Qwen/Qwen3-8B", model_revision="fixture-revision"),
@@ -154,6 +171,33 @@ def test_direct_recipe_keeps_gold_hidden_and_reports_strict_metrics():
         "affordances": [],
         "config": {},
     }
+
+
+def test_canonical_identity_survives_non_contiguous_materialization():
+    task = next(iter(create_gsm8k_direct_recipe(require_canonical_ids=True).task_adapter(_canonical_dataset()))).task
+
+    assert task.task_id == "openai/gsm8k@revision/main/test/0000042"
+    assert task.metadata == {
+        "data_source": "openai/gsm8k",
+        "split": "test",
+        "index": 42,
+        "source_index": 42,
+        "identity_scope": "canonical_source",
+        "row_digest": "a" * 64,
+    }
+
+
+def test_canonical_identity_requirement_fails_closed():
+    with pytest.raises(ValueError, match="canonical instance_id"):
+        tuple(create_gsm8k_direct_recipe(require_canonical_ids=True).task_adapter(_dataset()))
+
+
+def test_duplicate_canonical_identity_is_rejected():
+    row = _canonical_dataset().to_list()[0]
+    dataset = Dataset.create_from_dict({"type": "text2text", "instances": [row, row]})
+
+    with pytest.raises(ValueError, match="repeats instance_id"):
+        tuple(create_gsm8k_direct_recipe(require_canonical_ids=True).task_adapter(dataset))
 
 
 def test_calculator_recipe_reuses_visible_feedback_and_detects_recovery(tmp_path):
@@ -226,6 +270,30 @@ def test_calculator_recipe_reports_direct_answer_fallback():
     assert result.records[0].metrics["direct_answer_fallback"] == 1.0
     assert result.records[0].metrics["tool_compliance"] == 0.0
     assert result.records[0].metrics["final_correctness"] == 1.0
+
+
+def test_evaluator_counts_decimal_equivalent_answers_and_preserves_reference_exact_metric():
+    backend = RecordingBackend([_completion("The discounted pair price is #### 2.00")])
+    dataset = Dataset.create_from_dict(
+        {
+            "type": "text2text",
+            "instances": [{"input": "What is the price?", "output": "Reasoning. #### 2"}],
+        }
+    )
+
+    result = _evaluator().evaluate(
+        object(),
+        dataset,
+        recipe=create_gsm8k_direct_recipe(correctness="numeric-equivalence"),
+        runner=GSM8KCompletionRunner(backend=backend, model_name="served-qwen"),
+    )
+
+    assert result.records[0].metrics["final_correctness"] == 1.0
+    assert result.records[0].metrics["strict_correctness"] == 1.0
+    assert result.records[0].metrics["reference_exact_correctness"] == 0.0
+    assert result.records[0].metrics["strict_exact_correctness"] == 0.0
+    assert result.provenance.recipe["name"] == "gsm8k-direct-answer-v2"
+    assert result.provenance.recipe["metadata"]["correctness"] == "numeric-equivalence"
 
 
 @pytest.mark.parametrize(
