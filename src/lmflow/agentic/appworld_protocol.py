@@ -12,6 +12,7 @@ from typing import Any
 from lmflow.datasets import Dataset
 
 APPWORLD_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-tiny-protocol/v1"
+APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-data-pilot-protocol/v1"
 APPWORLD_REPOSITORY = "https://github.com/StonyBrookNLP/appworld.git"
 APPWORLD_REVISION = "a072b7a86e7c1d5b1d7175659d750ebb9b79f10a"
 APPWORLD_CODE_VERSION = "0.2.0.dev0"
@@ -20,6 +21,28 @@ APPWORLD_SOURCE_SPLIT = "dev"
 APPWORLD_SOURCE_SPLIT_SIZE = 57
 APPWORLD_SOURCE_SPLIT_SHA256 = "9fa976589300ea8905708257144d801d1604b06d85fb0181e381df8a3ba85001"
 APPWORLD_TINY_TASK_SET_SHA256 = "dafe2f2aad8a8cfabaa33550e9e9196d0a284b5bef2cca639b48e7c8e7dac67a"
+APPWORLD_OFFICIAL_SPLITS = {
+    "train": {
+        "task_count": 90,
+        "scenario_count": 30,
+        "task_list_sha256": "93d9fe71e7a2e3b7529803d4a20b604f4ebf5ae806f321081140238068189d37",
+    },
+    "dev": {
+        "task_count": 57,
+        "scenario_count": 19,
+        "task_list_sha256": "9fa976589300ea8905708257144d801d1604b06d85fb0181e381df8a3ba85001",
+    },
+    "test_normal": {
+        "task_count": 168,
+        "scenario_count": 56,
+        "task_list_sha256": "c3af41497b6f2f0860a2ff8c09b335dca527e2cf48e59b4aabdb301b6b68db8f",
+    },
+    "test_challenge": {
+        "task_count": 417,
+        "scenario_count": 139,
+        "task_list_sha256": "3c32b481042ac97f7d3477d53f5d196245c885c438d652944edc8a9a28e0f028",
+    },
+}
 
 # Three complete scenario groups make AppWorld's scenario-goal-completion
 # metric meaningful while covering one group at each official difficulty.
@@ -31,6 +54,19 @@ APPWORLD_TINY_SCENARIOS = {
 APPWORLD_TINY_TASK_IDS = tuple(
     f"{scenario_id}_{variant}" for scenario_id in APPWORLD_TINY_SCENARIOS for variant in (1, 2, 3)
 )
+
+# The first complete train scenario in official order at each difficulty is a
+# deterministic, scenario-disjoint paid-pilot candidate set. Actual provider
+# calls and candidate count still require a separately approved run.
+APPWORLD_DATA_PILOT_SCENARIOS = {
+    "82e2fac": {"difficulty": 1},
+    "692c77d": {"difficulty": 2},
+    "6104387": {"difficulty": 3},
+}
+APPWORLD_DATA_PILOT_TASK_IDS = tuple(
+    f"{scenario_id}_{variant}" for scenario_id in APPWORLD_DATA_PILOT_SCENARIOS for variant in (1, 2, 3)
+)
+APPWORLD_DATA_PILOT_TASK_SET_SHA256 = "d8a89fb3037ce6fe078d72517b80146c1c2cd1f6c007cad79beaa06aa3252327"
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -133,12 +169,56 @@ def _validate_source(root: Path, load_task_ids: Any) -> dict[str, set[str]]:
     return by_difficulty
 
 
+def _scenario_id(task_id: str) -> str:
+    return task_id.rsplit("_", maxsplit=1)[0]
+
+
+def _validate_official_splits(root: Path, load_task_ids: Any) -> dict[str, tuple[str, ...]]:
+    split_task_ids = {}
+    split_scenarios = {}
+    for split, expected in APPWORLD_OFFICIAL_SPLITS.items():
+        split_path = root / "data" / "datasets" / f"{split}.txt"
+        if _sha256_file(split_path) != expected["task_list_sha256"]:
+            raise ValueError(f"pinned AppWorld {split!r} task-list digest mismatch")
+        task_ids = tuple(load_task_ids(split, num_tasks_per_scenario=3))
+        scenarios = {_scenario_id(task_id) for task_id in task_ids}
+        if len(task_ids) != expected["task_count"]:
+            raise ValueError(f"pinned AppWorld {split!r} task count changed")
+        if len(scenarios) != expected["scenario_count"]:
+            raise ValueError(f"pinned AppWorld {split!r} scenario count changed")
+        split_task_ids[split] = task_ids
+        split_scenarios[split] = scenarios
+    split_names = tuple(APPWORLD_OFFICIAL_SPLITS)
+    for index, left in enumerate(split_names):
+        for right in split_names[index + 1 :]:
+            overlap = split_scenarios[left] & split_scenarios[right]
+            if overlap:
+                raise ValueError(f"AppWorld scenarios overlap between {left!r} and {right!r}: {sorted(overlap)}")
+    if not set(APPWORLD_DATA_PILOT_TASK_IDS).issubset(split_task_ids["train"]):
+        raise ValueError("AppWorld data-pilot tasks are absent from train")
+    for difficulty, scenario_id in enumerate(APPWORLD_DATA_PILOT_SCENARIOS, start=1):
+        difficulty_ids = tuple(load_task_ids("train", difficulty=difficulty, num_tasks_per_scenario=3))
+        if not difficulty_ids or _scenario_id(difficulty_ids[0]) != scenario_id:
+            raise ValueError(f"AppWorld data-pilot difficulty-{difficulty} selection rule changed")
+    return split_task_ids
+
+
 def canonical_appworld_instance_id(task_id: str) -> str:
     """Build a stable identity for a pinned AppWorld task."""
 
     if task_id not in APPWORLD_TINY_TASK_IDS:
         raise ValueError(f"task {task_id!r} is outside the pinned AppWorld tiny task set")
     return f"{APPWORLD_REPOSITORY}@{APPWORLD_REVISION}/data-{APPWORLD_DATA_VERSION}/{APPWORLD_SOURCE_SPLIT}/{task_id}"
+
+
+def canonical_appworld_sliced_instance_id(task_id: str, *, source_split: str) -> str:
+    """Build an identity for one of the two frozen AppWorld development slices."""
+
+    if source_split == APPWORLD_SOURCE_SPLIT:
+        return canonical_appworld_instance_id(task_id)
+    if source_split == "train" and task_id in APPWORLD_DATA_PILOT_TASK_IDS:
+        return f"{APPWORLD_REPOSITORY}@{APPWORLD_REVISION}/data-{APPWORLD_DATA_VERSION}/train/{task_id}"
+    raise ValueError(f"task {task_id!r} is outside the pinned AppWorld {source_split!r} slice")
 
 
 def _normalize_task_ids(task_ids: Sequence[str] | None) -> tuple[str, ...]:
@@ -242,9 +322,90 @@ def load_pinned_appworld_tiny_dataset(
     return dataset, manifest
 
 
+def load_pinned_appworld_data_pilot_dataset(
+    *,
+    appworld_root: str | os.PathLike[str],
+) -> tuple[Dataset, dict[str, Any]]:
+    """Load the frozen train pilot without loading ground truth into the Dataset."""
+
+    root = _configure_root(appworld_root)
+    _, Task, load_task_ids = _require_appworld()
+    split_task_ids = _validate_official_splits(root, load_task_ids)
+    if canonical_json_sha256(list(APPWORLD_DATA_PILOT_TASK_IDS)) != APPWORLD_DATA_PILOT_TASK_SET_SHA256:
+        raise RuntimeError("AppWorld data-pilot task-set constant does not match its pinned digest")
+
+    instances = []
+    instance_manifest = []
+    for task_id in APPWORLD_DATA_PILOT_TASK_IDS:
+        scenario_id = _scenario_id(task_id)
+        difficulty = APPWORLD_DATA_PILOT_SCENARIOS[scenario_id]["difficulty"]
+        spec_path = root / "data" / "tasks" / task_id / "specs.json"
+        task_spec_sha256 = _sha256_file(spec_path)
+        task = Task.load(task_id=task_id, load_ground_truth=False)
+        try:
+            instance_id = canonical_appworld_sliced_instance_id(task_id, source_split="train")
+            instance = {
+                "text": task.instruction,
+                "instance_id": instance_id,
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "difficulty": difficulty,
+                "source_split": "train",
+                "task_spec_sha256": task_spec_sha256,
+            }
+            instances.append(instance)
+            instance_manifest.append({key: value for key, value in instance.items() if key != "text"})
+        finally:
+            task.close()
+
+    dataset = Dataset.create_from_dict({"type": "text_only", "instances": instances})
+    split_identity = {
+        split: {
+            **APPWORLD_OFFICIAL_SPLITS[split],
+            "task_ids_sha256": canonical_json_sha256(list(task_ids)),
+        }
+        for split, task_ids in split_task_ids.items()
+    }
+    protocol_identity = {
+        "format_version": APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION,
+        "source": {
+            "repository": APPWORLD_REPOSITORY,
+            "revision": APPWORLD_REVISION,
+            "code_version": APPWORLD_CODE_VERSION,
+            "data_version": APPWORLD_DATA_VERSION,
+            "split": "train",
+        },
+        "official_splits": split_identity,
+        "scenario_disjoint": True,
+        "pilot_task_set": {
+            "task_ids": list(APPWORLD_DATA_PILOT_TASK_IDS),
+            "task_ids_sha256": APPWORLD_DATA_PILOT_TASK_SET_SHA256,
+            "selection_rule": "first complete train scenario in official order at each difficulty",
+            "tasks_per_scenario": 3,
+            "scenario_count": 3,
+            "scenarios": APPWORLD_DATA_PILOT_SCENARIOS,
+        },
+        "gold_visibility": "ground_truth_not_loaded_for_dataset_projection",
+    }
+    manifest = with_manifest_digest(
+        {
+            **protocol_identity,
+            "dataset_protocol_sha256": canonical_json_sha256(protocol_identity),
+            "instance_count": len(instance_manifest),
+            "instances": instance_manifest,
+            "selected_content_sha256": canonical_json_sha256([item["task_spec_sha256"] for item in instance_manifest]),
+        }
+    )
+    return dataset, manifest
+
+
 __all__ = [
     "APPWORLD_CODE_VERSION",
+    "APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION",
+    "APPWORLD_DATA_PILOT_SCENARIOS",
+    "APPWORLD_DATA_PILOT_TASK_IDS",
     "APPWORLD_DATA_VERSION",
+    "APPWORLD_OFFICIAL_SPLITS",
     "APPWORLD_PROTOCOL_FORMAT_VERSION",
     "APPWORLD_REPOSITORY",
     "APPWORLD_REVISION",
@@ -252,7 +413,9 @@ __all__ = [
     "APPWORLD_TINY_SCENARIOS",
     "APPWORLD_TINY_TASK_IDS",
     "canonical_appworld_instance_id",
+    "canonical_appworld_sliced_instance_id",
     "canonical_json_sha256",
+    "load_pinned_appworld_data_pilot_dataset",
     "load_pinned_appworld_tiny_dataset",
     "verify_manifest_digest",
     "with_manifest_digest",

@@ -114,7 +114,9 @@ subset for development. Scenario goal completion is flagged as uninterpretable
 when any selected scenario lacks one of its three variants. The default
 per-step output cap is the official profile's 3000 tokens; a smaller
 `--max-completion-tokens` is a recorded development budget rather than an
-untracked server-side change.
+untracked server-side change. `--enable-thinking` records and enables Qwen3's
+chat-template thinking mode; omitting it preserves the official AppWorld
+no-reasoning profile.
 
 ## Local Base evidence
 
@@ -156,6 +158,121 @@ bootstrap from the exact Git+LFS revision. The full upstream test matrix was
 intentionally not used as the acceptance boundary; AppWorld's core 1,652 tests
 and common 76 tests passed separately, while remote-mode and MCP-specific tests
 remain outside this local in-process slice.
+
+## Local 4B checkpoint compatibility gate
+
+The selected local 4B lineages are pinned independently:
+
+- `Qwen/Qwen3-4B` revision
+  `1cfa9a7208912126459214e8b04321603b3df60c`, reported as a starting
+  checkpoint because it is post-trained;
+- `Qwen/Qwen3-4B-Base` revision
+  `906bfd4b4dc7f14ee4320094d8b41684abff8539`, reported as Base.
+
+Both exact snapshots load in the unified Python 3.12 environment with vLLM
+0.25.1, BF16, a 32,768-token server context, V1 model runner, one sequence, and
+0.70 GPU-memory utilization on the local RTX 4090. Each model used about 7.55
+GiB for weights and retained about 8.99 GiB for KV cache; vLLM reported KV
+capacity equivalent to about two 32,768-token requests, while the run remained
+explicitly capped at one sequence. The gate ran serially with one model service
+at a time and shut each service down after its artifact was published. No CUDA,
+NVML, timeout, worker-restart, or HTTP error occurred.
+
+Three protected one-task artifacts record behavior without claiming a tiny9
+quality comparison:
+
+- Qwen3-4B with the official no-thinking profile repeated the same valid API
+  documentation query for all five allowed diagnostic steps. It made five API
+  attempts, changed no state, consumed 40,040 tokens, and ended at the step
+  limit. Its run-manifest SHA-256 is
+  `41d9defadbc653928e53c42926327975d15563c0dee53fefb192233c40eff1a7` and
+  report-manifest SHA-256 is
+  `63628467a60fb8e1faf3d5fb13a9e080d4dcbd80132478c15a001806faaf8c62`.
+- Qwen3-4B with thinking enabled broke the exact repetition and attempted
+  successive repairs, but all ten Python actions ended in execution errors. It
+  made 33 API attempts, changed no state, consumed 91,443 tokens, and used
+  162.38 seconds of model time. Its run-manifest SHA-256 is
+  `ea2e1c740a55e6b3eec629366734f23a75fc66a7221e7b2ffef5e7d964bff4d1` and
+  report-manifest SHA-256 is
+  `85515c5a680fcf7fcd325e2ca879bd74fa181b3481ce50a586004ed7e32b86c4`.
+- Qwen3-4B-Base completed the serving and environment compatibility path but
+  repeated one valid discovery action until the 3,000-token output cap. The
+  single action changed no state and used 43.49 seconds of model time. Its
+  run-manifest SHA-256 is
+  `7b82c4e7af740fa2bb2afa624652030c5bbf1514f25a49f8da825869f3b03e7d` and
+  report-manifest SHA-256 is
+  `e64eb54943c64592aacce89f95ae86c40417783cb6249414b2746f78b543e36a`.
+
+All three official evaluations returned task goal completion 0.0. These runs
+establish 32K execution compatibility and concrete cold-start failure modes;
+they do not replace a post-SFT tiny9 evaluation. The evidence favors using the
+post-trained checkpoint for teacher-guided cold-start development while keeping
+the raw Base lineage as the pure-base control. Thinking remains an explicit
+recorded choice because it trades exact repetition for much longer outputs and
+currently unsuccessful API repair behavior under the unchanged official
+scaffold.
+
+## Cold-start data factory gate
+
+The benchmark-local data factory uses only the official `train` split. The
+pinned data lists contain 90 train tasks in 30 scenarios, 57 dev tasks in 19
+scenarios, 168 normal-test tasks in 56 scenarios, and 417 challenge-test tasks
+in 139 scenarios. Their task-list SHA-256 values are respectively
+`93d9fe71e7a2e3b7529803d4a20b604f4ebf5ae806f321081140238068189d37`,
+`9fa976589300ea8905708257144d801d1604b06d85fb0181e381df8a3ba85001`,
+`c3af41497b6f2f0860a2ff8c09b335dca527e2cf48e59b4aabdb301b6b68db8f`,
+and `3c32b481042ac97f7d3477d53f5d196245c885c438d652944edc8a9a28e0f028`.
+The scenario-ID intersection is empty for every split pair.
+
+The unpaid pilot protocol deterministically freezes the first complete train
+scenario in official order at each difficulty:
+
+| Difficulty | Scenario | Tasks |
+|---|---|---|
+| 1 | `82e2fac` | `82e2fac_1`, `82e2fac_2`, `82e2fac_3` |
+| 2 | `692c77d` | `692c77d_1`, `692c77d_2`, `692c77d_3` |
+| 3 | `6104387` | `6104387_1`, `6104387_2`, `6104387_3` |
+
+The ordered pilot task-ID SHA-256 is
+`d8a89fb3037ce6fe078d72517b80146c1c2cd1f6c007cad79beaa06aa3252327`.
+Two to four candidates per task produce an 18-36 trajectory micro pilot. A
+provider, model, endpoint identity, sampling profile, effective pricing source,
+and explicit paid-run approval are still required before execution. No online
+teacher call has been made by this slice.
+
+Every candidate follows a fail-closed path:
+
+1. Start from the pinned revision and a fresh reset, run the unchanged official
+   scaffold against the real environment, and invoke the official evaluator.
+2. Start from another fresh reset and replay the exact recorded Python actions.
+   Compare initial state, every action output digest, validity, API-call count,
+   per-step state digest, final state, and the sealed official-evaluation
+   summary.
+3. Exclude any replay mismatch. Admit success only when both original and replay
+   pass every official test and reach the same permitted state delta.
+4. Classify as A verified success, B verified recovery, C sealed partial, D
+   auditable failure, or E infrastructure/invalid. C, D, and E emit no SFT
+   conversation in the current slice.
+5. For B, keep failed actions and their visible observations as context with
+   `loss:false`; train only valid recovery actions. A feeds both the
+   success-only and success-plus-recovery arms, while B feeds only the latter.
+
+The atomic factory report aggregates accepted yield, A-E counts, collateral
+rejection, replay mismatch, duplicate accepted targets, token usage,
+trainable-output-token p50/p95, truncation rate, and provider-derived USD cost.
+Credentials are rejected from persisted provider identity. Raw trajectories,
+replay evidence, AppWorld logs, and Dataset instructions remain protected local
+artifacts outside Git; Conversation projections contain no verifier details or
+hidden state. D can produce Preference only after a separately verified
+improved pair under the same task and reset, which this first factory slice does
+not synthesize.
+
+The unified agentic virtual environment can retain an editable-install pointer
+to a different LMFlow worktree. Tests and local entry points for this slice must
+therefore resolve the active checkout explicitly, for example with
+`PYTHONPATH="$PWD/src"`, unless the environment has just been installed from the
+same worktree. This avoids silently importing stale AppWorld modules while still
+keeping one long-lived Python 3.12 environment.
 
 ## GSM8K and AppWorld friction evidence
 

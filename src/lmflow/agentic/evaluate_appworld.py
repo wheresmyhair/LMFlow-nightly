@@ -171,6 +171,7 @@ def run_appworld_tiny_baseline(
     max_num_seqs: int = 1,
     max_steps: int = 50,
     max_completion_tokens: int = 3000,
+    enable_thinking: bool = False,
     timeout_seconds: float = 300.0,
     max_retries: int = 2,
     api_key: str | None = None,
@@ -210,6 +211,8 @@ def run_appworld_tiny_baseline(
             raise ValueError(f"{name} must be a positive integer")
     if max_steps > 50:
         raise ValueError("max_steps cannot exceed the official scaffold's 50-step limit")
+    if not isinstance(enable_thinking, bool):
+        raise TypeError("enable_thinking must be a bool")
     if isinstance(gpu_memory_utilization, bool) or not isinstance(gpu_memory_utilization, int | float):
         raise TypeError("gpu_memory_utilization must be a number")
     if not math.isfinite(gpu_memory_utilization) or not 0 < gpu_memory_utilization <= 1:
@@ -243,7 +246,7 @@ def run_appworld_tiny_baseline(
             "artifact_sha256": model_artifact_sha256,
             "tokenizer": tokenizer,
         }
-        sampling = dict(qwen3_reference_model_kwargs())
+        sampling = dict(qwen3_reference_model_kwargs(enable_thinking=enable_thinking))
         sampling["max_completion_tokens"] = max_completion_tokens
         scaffold = scaffold_identity(appworld_source)
         execution_identity = {
@@ -478,6 +481,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3000,
         help="Per-step output cap; 3000 matches AppWorld's official Qwen3-8B profile.",
     )
+    run.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        help="Enable Qwen3 thinking in the chat template; disabled by the official AppWorld profile.",
+    )
     run.add_argument("--timeout-seconds", type=_positive_int, default=300)
     run.add_argument("--max-retries", type=int, default=2)
     run.add_argument(
@@ -525,6 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_num_seqs=args.max_num_seqs,
                 max_steps=args.max_steps,
                 max_completion_tokens=args.max_completion_tokens,
+                enable_thinking=args.enable_thinking,
                 timeout_seconds=args.timeout_seconds,
                 max_retries=args.max_retries,
                 api_key=os.environ.get(args.api_key_env),
