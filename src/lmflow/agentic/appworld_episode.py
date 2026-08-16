@@ -17,8 +17,10 @@ from lmflow.agentic.appworld_protocol import (
     APPWORLD_CODE_VERSION,
     APPWORLD_DATA_VERSION,
     APPWORLD_REVISION,
-    canonical_appworld_instance_id,
+    APPWORLD_SOURCE_SPLIT,
+    canonical_appworld_sliced_instance_id,
     canonical_json_sha256,
+    verify_manifest_digest,
     with_manifest_digest,
 )
 from lmflow.agentic.completion import CompletionBackend, normalize_completion_response
@@ -32,6 +34,7 @@ from lmflow.agentic.scaffolds.appworld_react_code.scaffold import (
 )
 
 APPWORLD_EPISODE_FORMAT_VERSION = "lmflow.appworld-episode/v1"
+APPWORLD_REPLAY_FORMAT_VERSION = "lmflow.appworld-replay/v1"
 APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION = "lmflow.appworld-conversation-projection/v1"
 _EXECUTION_FAILURE_PREFIX = "Execution failed. Traceback:"
 _SENSITIVE_KEY_PARTS = ("access_token", "authorization", "password", "secret", "token")
@@ -165,6 +168,32 @@ def _failure_type(*, official_success: bool, termination_reason: str, invalid_ac
     return "incomplete"
 
 
+def _official_evaluation_summary(evaluation: Any) -> dict[str, int | bool | None]:
+    if not isinstance(evaluation, Mapping):
+        return {"success": False, "num_tests": None, "pass_count": None, "failure_count": None}
+    num_tests = evaluation.get("num_tests")
+    passes = evaluation.get("passes")
+    failures = evaluation.get("failures")
+    return {
+        "success": evaluation.get("success") is True,
+        "num_tests": num_tests if isinstance(num_tests, int) and not isinstance(num_tests, bool) else None,
+        "pass_count": len(passes) if isinstance(passes, list) else None,
+        "failure_count": len(failures) if isinstance(failures, list) else None,
+    }
+
+
+def _all_official_tests_passed(summary: Mapping[str, Any]) -> bool:
+    num_tests = summary.get("num_tests")
+    return (
+        summary.get("success") is True
+        and isinstance(num_tests, int)
+        and not isinstance(num_tests, bool)
+        and num_tests > 0
+        and summary.get("pass_count") == num_tests
+        and summary.get("failure_count") == 0
+    )
+
+
 def configure_appworld_freezegun() -> None:
     """Keep AppWorld's task clock from traversing vLLM's lazy modules."""
 
@@ -198,11 +227,12 @@ def run_appworld_episode(
     experiment_name: str,
     model_kwargs: Mapping[str, Any] | None = None,
     max_steps: int = 50,
+    source_split: str = APPWORLD_SOURCE_SPLIT,
     world_factory: Callable[..., Any] | None = None,
 ) -> AppWorldEpisodeResult:
     """Run one local AppWorld task and evaluate it with AppWorld's verifier."""
 
-    canonical_appworld_instance_id(task_id)
+    instance_id = canonical_appworld_sliced_instance_id(task_id, source_split=source_split)
     for name, value in (
         ("model_name", model_name),
         ("model_revision", model_revision),
@@ -317,6 +347,7 @@ def run_appworld_episode(
             api_calls = api_calls_after[len(api_calls_before) :]
             state_after_sha256 = _directory_digest(Path(world.output_db_home_path_on_disk))
             valid_action = _action_is_valid(code, execution_output)
+            training_message["loss"] = valid_action
             recovered = pending_failed_action and valid_action
             if recovered:
                 recovery_count += 1
@@ -402,7 +433,8 @@ def run_appworld_episode(
             "trajectory_id": trajectory_id,
             "task": {
                 "task_id": task_id,
-                "instance_id": canonical_appworld_instance_id(task_id),
+                "instance_id": instance_id,
+                "source_split": source_split,
                 "ground_truth_visibility": "official_evaluator_only",
             },
             "agent": scaffold,
@@ -439,7 +471,9 @@ def run_appworld_episode(
             "source_artifact_sha256": artifact["manifest_sha256"],
             "task_id": task_id,
             "official_success": official_success,
-            "eligible_for_success_only_sft": official_success,
+            "replay_required": True,
+            "eligible_for_success_only_sft": False,
+            "eligible_for_success_plus_recovery_sft": False,
         },
     }
     training_projection = {
@@ -454,10 +488,151 @@ def run_appworld_episode(
     )
 
 
+def replay_appworld_episode(
+    artifact: Mapping[str, Any],
+    *,
+    appworld_root: str | os.PathLike[str],
+    experiment_name: str,
+    world_factory: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Replay recorded actions from a fresh reset and return sealed gate evidence."""
+
+    if not isinstance(artifact, Mapping):
+        raise TypeError("artifact must be a mapping")
+    verify_manifest_digest(artifact)
+    if artifact.get("format_version") != APPWORLD_EPISODE_FORMAT_VERSION:
+        raise ValueError("artifact is not an AppWorld episode")
+    if not isinstance(experiment_name, str) or not experiment_name.strip():
+        raise ValueError("experiment_name must be a non-empty string")
+    task = artifact.get("task")
+    if not isinstance(task, Mapping) or not isinstance(task.get("task_id"), str):
+        raise ValueError("artifact task identity is missing")
+    task_id = task["task_id"]
+    source_split = task.get("source_split", APPWORLD_SOURCE_SPLIT)
+    if not isinstance(source_split, str):
+        raise ValueError("artifact source split is invalid")
+    canonical_appworld_sliced_instance_id(task_id, source_split=source_split)
+    action_steps = artifact.get("action_steps")
+    if not isinstance(action_steps, list):
+        raise ValueError("artifact action_steps must be a list")
+    for action_step in action_steps:
+        if not isinstance(action_step, Mapping) or not isinstance(action_step.get("code"), str):
+            raise ValueError("every recorded action step must contain code")
+
+    root = Path(appworld_root).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"AppWorld root does not exist: {root}")
+    os.environ["APPWORLD_ROOT"] = str(root)
+    factory = world_factory or _default_world_factory
+    replay_error: dict[str, Any] | None = None
+    initial_state_sha256 = None
+    final_state_sha256 = None
+    official_evaluation = None
+    replay_steps: list[dict[str, Any]] = []
+
+    try:
+        with factory(
+            task_id=task_id,
+            experiment_name=experiment_name,
+            load_ground_truth=True,
+            random_seed=APPWORLD_REACT_CODE_SCAFFOLD["configuration"]["random_seed"],
+            raise_on_extra_parameters=True,
+        ) as world:
+            state_directory = Path(world.output_db_home_path_on_disk)
+            initial_state_sha256 = _directory_digest(state_directory)
+            for action_step in action_steps:
+                state_before_sha256 = _directory_digest(state_directory)
+                requests_before = _request_log(world)
+                try:
+                    output = world.execute(action_step["code"])
+                except Exception as error:
+                    replay_error = {
+                        "stage": "execute",
+                        "step_number": action_step.get("step_number"),
+                        "type": type(error).__name__,
+                    }
+                    break
+                requests_after = _request_log(world)
+                state_after_sha256 = _directory_digest(state_directory)
+                replay_steps.append(
+                    {
+                        "step_number": action_step.get("step_number"),
+                        "output_sha256_match": hashlib.sha256(output.encode()).hexdigest()
+                        == hashlib.sha256(str(action_step.get("output", "")).encode()).hexdigest(),
+                        "validity_match": _action_is_valid(action_step["code"], output)
+                        is bool(action_step.get("valid")),
+                        "api_call_count_match": len(requests_after) - len(requests_before)
+                        == action_step.get("api_call_count"),
+                        "state_before_match": state_before_sha256 == action_step.get("state_before_sha256"),
+                        "state_after_match": state_after_sha256 == action_step.get("state_after_sha256"),
+                    }
+                )
+            final_state_sha256 = _directory_digest(state_directory)
+            if replay_error is None:
+                try:
+                    official_evaluation = world.evaluate(suppress_errors=True).to_dict(stats_only=False)
+                except Exception as error:
+                    replay_error = {"stage": "official_evaluator", "type": type(error).__name__}
+    except Exception as error:
+        replay_error = {"stage": "environment_initialization", "type": type(error).__name__}
+
+    original_summary = _official_evaluation_summary(artifact.get("official_evaluation"))
+    replay_summary = _official_evaluation_summary(official_evaluation)
+    action_count_match = len(replay_steps) == len(action_steps)
+    step_evidence_match = action_count_match and all(
+        all(value is True for key, value in replay_step.items() if key != "step_number") for replay_step in replay_steps
+    )
+    initial_state_match = initial_state_sha256 == artifact.get("initial_state_sha256")
+    final_state_match = final_state_sha256 == artifact.get("final_state_sha256")
+    official_summary_match = original_summary == replay_summary
+    replay_match = (
+        replay_error is None
+        and initial_state_match
+        and step_evidence_match
+        and final_state_match
+        and official_summary_match
+    )
+    collateral_invariant_passed = (
+        replay_match and _all_official_tests_passed(original_summary) and _all_official_tests_passed(replay_summary)
+    )
+    return with_manifest_digest(
+        {
+            "format_version": APPWORLD_REPLAY_FORMAT_VERSION,
+            "source_trajectory_id": artifact.get("trajectory_id"),
+            "source_artifact_sha256": artifact["manifest_sha256"],
+            "task_id": task_id,
+            "source_split": source_split,
+            "appworld_revision": APPWORLD_REVISION,
+            "reset_seed": APPWORLD_REACT_CODE_SCAFFOLD["configuration"]["random_seed"],
+            "action_count": len(action_steps),
+            "replayed_action_count": len(replay_steps),
+            "initial_state_match": initial_state_match,
+            "step_evidence": replay_steps,
+            "final_state_match": final_state_match,
+            "official_summary_match": official_summary_match,
+            "original_official_success": original_summary["success"],
+            "replay_official_success": replay_summary["success"],
+            "original_all_official_tests_passed": _all_official_tests_passed(original_summary),
+            "replay_all_official_tests_passed": _all_official_tests_passed(replay_summary),
+            "sealed_partial_signal": (
+                original_summary["success"] is False
+                and isinstance(original_summary["pass_count"], int)
+                and original_summary["pass_count"] > 0
+            ),
+            "replay_error": replay_error,
+            "replay_match": replay_match,
+            "collateral_invariant_passed": collateral_invariant_passed,
+            "hidden_verifier_material_included": False,
+        }
+    )
+
+
 __all__ = [
     "APPWORLD_EPISODE_FORMAT_VERSION",
+    "APPWORLD_REPLAY_FORMAT_VERSION",
     "APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION",
     "AppWorldEpisodeResult",
     "configure_appworld_freezegun",
+    "replay_appworld_episode",
     "run_appworld_episode",
 ]

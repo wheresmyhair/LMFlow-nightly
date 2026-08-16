@@ -142,10 +142,14 @@ def scaffold_identity(source_root: str | Path) -> dict[str, Any]:
     }
 
 
-def qwen3_reference_model_kwargs() -> Mapping[str, Any]:
-    """Return a copy of AppWorld's official Qwen3-8B no-reasoning profile."""
+def qwen3_reference_model_kwargs(*, enable_thinking: bool = False) -> Mapping[str, Any]:
+    """Return AppWorld's Qwen3 profile with an explicit thinking-mode choice."""
 
-    return json.loads(json.dumps(APPWORLD_REACT_CODE_SCAFFOLD["qwen3_8b_without_reasoning"]))
+    if not isinstance(enable_thinking, bool):
+        raise TypeError("enable_thinking must be a bool")
+    model_kwargs = json.loads(json.dumps(APPWORLD_REACT_CODE_SCAFFOLD["qwen3_8b_without_reasoning"]))
+    model_kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] = enable_thinking
+    return model_kwargs
 
 
 __all__ = [

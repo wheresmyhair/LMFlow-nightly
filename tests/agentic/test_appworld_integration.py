@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from lmflow.agentic.appworld_episode import run_appworld_episode
-from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS
+from lmflow.agentic.appworld_episode import replay_appworld_episode, run_appworld_episode
+from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS, load_pinned_appworld_data_pilot_dataset
 from lmflow.agentic.evaluate_appworld import verify_appworld_install
 
 
@@ -37,6 +37,10 @@ def test_pinned_appworld_tiny_load_reset_and_official_evaluator():
     assert result["reset_equal"] is True
     assert result["dataset_instance_count"] == 1
     assert result["official_evaluation_stats"]["num_tests"] > 0
+    pilot_dataset, pilot_manifest = load_pinned_appworld_data_pilot_dataset(appworld_root=appworld_root)
+    assert len(pilot_dataset) == 9
+    assert pilot_manifest["scenario_disjoint"] is True
+    assert pilot_manifest["source"]["split"] == "train"
 
 
 @pytest.mark.optional_backend
@@ -64,3 +68,10 @@ def test_real_appworld_episode_uses_unfrozen_latency_and_official_evaluator():
     assert metrics["latency_seconds"]["initialization"] < 60
     assert metrics["latency_seconds"]["environment"] < 60
     assert result.artifact["official_evaluation"]["num_tests"] > 0
+    replay = replay_appworld_episode(
+        result.artifact,
+        appworld_root=appworld_root,
+        experiment_name="lmflow-appworld-real-one-step-integration-replay",
+    )
+    assert replay["replay_match"] is True
+    assert replay["collateral_invariant_passed"] is False
