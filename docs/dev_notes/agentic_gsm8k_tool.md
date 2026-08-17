@@ -121,11 +121,13 @@ answer text.
 
 The protocol reserves 512 deterministically hash-ranked official training rows
 for `development`; `training` is the other 6,961 rows in source order. The
-official 1,319-row test split is held out from data construction. Its bounded
-evaluation views are nested: `smoke` (16 rows), `repeat` (128 rows), and
-`decision` (512 rows). `heldout` evaluates all 1,319 test rows in canonical
-source order. The split seed and selection algorithm are part of the dataset
-manifest.
+`development128` view is the first 128 rows of that same ranked development
+view and supports paired Base/SFT checkpoint and recipe iteration. It remains
+disjoint from every training row. The official 1,319-row test split is held out
+from data construction. Its bounded evaluation views are nested: `smoke` (16
+rows), `repeat` (128 rows), and `decision` (512 rows). `heldout` evaluates all
+1,319 test rows in canonical source order. The split seed and selection
+algorithm are part of the dataset manifest.
 
 Run both the direct-answer and arithmetic-calculator conditions against an
 already running OpenAI-compatible vLLM endpoint:

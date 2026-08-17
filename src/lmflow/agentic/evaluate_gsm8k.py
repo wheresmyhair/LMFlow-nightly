@@ -494,7 +494,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--backend-version", required=True, help="Version of the serving engine.")
     run.add_argument(
         "--split",
-        choices=["development", "smoke", "repeat", "decision", "heldout"],
+        choices=["development", "development128", "smoke", "repeat", "decision", "heldout"],
         default="smoke",
     )
     run.add_argument("--sampling-seed", type=int, default=0)
