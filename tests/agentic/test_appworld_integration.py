@@ -2,7 +2,12 @@ import os
 
 import pytest
 
-from lmflow.agentic.appworld_episode import replay_appworld_episode, run_appworld_episode
+from lmflow.agentic.appworld_episode import (
+    project_appworld_conversation_for_react_scaffold,
+    project_appworld_messages_for_react_scaffold,
+    replay_appworld_episode,
+    run_appworld_episode,
+)
 from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS, load_pinned_appworld_data_pilot_dataset
 from lmflow.agentic.evaluate_appworld import verify_appworld_install
 
@@ -68,6 +73,13 @@ def test_real_appworld_episode_uses_unfrozen_latency_and_official_evaluator():
     assert metrics["latency_seconds"]["initialization"] < 60
     assert metrics["latency_seconds"]["environment"] < 60
     assert result.artifact["official_evaluation"]["num_tests"] > 0
+    semantic_messages = result.training_projection["instances"][0]["messages"]
+    assert any(message["role"] == "tool" for message in semantic_messages)
+    projected = project_appworld_conversation_for_react_scaffold(result.training_projection)
+    projected_messages = projected["instances"][0]["messages"]
+    model_messages = project_appworld_messages_for_react_scaffold(semantic_messages)
+    assert model_messages[: len(result.artifact["initial_messages"])] == result.artifact["initial_messages"]
+    assert any(message.get("loss") is False for message in projected_messages if message["role"] == "assistant")
     replay = replay_appworld_episode(
         result.artifact,
         appworld_root=appworld_root,

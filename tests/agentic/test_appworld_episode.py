@@ -2,19 +2,31 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lmflow.agentic.appworld_data_factory import finalize_appworld_candidate, summarize_appworld_candidates
-from lmflow.agentic.appworld_episode import replay_appworld_episode, run_appworld_episode
+from lmflow.agentic.appworld_episode import (
+    APPWORLD_PYTHON_TOOL_NAME,
+    APPWORLD_REACT_TRAINING_PROJECTION_FORMAT_VERSION,
+    project_appworld_conversation_for_react_scaffold,
+    project_appworld_messages_for_react_scaffold,
+    replay_appworld_episode,
+    run_appworld_episode,
+)
 from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS, verify_manifest_digest
+from lmflow.datasets.dataset import Dataset
 
 
 class FakeBackend:
     def __init__(self):
+        self.calls = []
         self.responses = [
             "I will probe.\n```python\nfail()\n```",
             "I will recover and finish.\n```python\ncomplete()\n```",
         ]
 
     def complete(self, *, messages, tools, model_name, model_kwargs):
+        self.calls.append(messages)
         content = self.responses.pop(0)
         return {
             "message": {"role": "assistant", "content": content},
@@ -96,6 +108,7 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
         unexpected_freezegun_configure,
     )
     world = FakeWorld(tmp_path)
+    backend = FakeBackend()
 
     def factory(**kwargs):
         return world
@@ -103,7 +116,7 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
     original_appworld_root = os.environ.get("APPWORLD_ROOT")
     try:
         result = run_appworld_episode(
-            FakeBackend(),
+            backend,
             task_id=APPWORLD_TINY_TASK_IDS[0],
             model_name="Qwen/Qwen3-8B",
             model_revision="revision",
@@ -134,11 +147,41 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
     assert result.artifact["action_steps"][0]["api_calls_redacted"][0]["data"]["password"] == "[REDACTED]"
 
     messages = result.training_projection["instances"][0]["messages"]
-    assert [message["role"] for message in messages] == ["user", "assistant", "user", "assistant"]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool", "assistant"]
+    first_call = messages[1]["tool_calls"][0]
+    assert first_call["function"]["name"] == APPWORLD_PYTHON_TOOL_NAME
+    assert first_call["extra"] == {
+        "origin": "parsed_assistant_content",
+        "native_provider_tool_call": False,
+    }
+    assert messages[2]["tool_call_id"] == first_call["id"]
+    assert messages[2]["name"] == APPWORLD_PYTHON_TOOL_NAME
     assert messages[1]["loss"] is False
     assert messages[-1]["loss"] is True
     assert messages[-1]["content"].endswith("\n\n")
+    assert [message["role"] for message in backend.calls[0]] == ["user"]
+    assert [message["role"] for message in backend.calls[1]] == ["user", "assistant", "user"]
+    assert "tool_calls" not in backend.calls[1][1]
+    assert backend.calls[1][2]["content"] == messages[2]["content"]
+    assert project_appworld_messages_for_react_scaffold(messages)[:3] == backend.calls[1]
+    scaffold_projection = project_appworld_conversation_for_react_scaffold(result.training_projection)
+    assert len(Dataset.create_from_dict(result.training_projection)) == 1
+    assert len(Dataset.create_from_dict(scaffold_projection)) == 1
+    scaffold_messages = scaffold_projection["instances"][0]["messages"]
+    assert scaffold_messages[1]["loss"] is False
+    assert (
+        scaffold_projection["instances"][0]["metadata"]["format_version"]
+        == APPWORLD_REACT_TRAINING_PROJECTION_FORMAT_VERSION
+    )
+    assert scaffold_messages[-1] == {
+        "role": "assistant",
+        "content": messages[-1]["content"],
+        "loss": True,
+    }
     metadata = result.training_projection["instances"][0]["metadata"]
+    assert metadata["semantic_roles"] is True
+    assert metadata["observation_role"] == "tool"
+    assert metadata["requires_scaffold_projection"] is True
     assert metadata["replay_required"] is True
     assert metadata["eligible_for_success_only_sft"] is False
     assert metadata["eligible_for_success_plus_recovery_sft"] is False
@@ -226,3 +269,26 @@ def test_replay_mismatch_is_excluded_as_invalid_infrastructure(monkeypatch, tmp_
     assert finalized.admission["data_class"] == "E"
     assert finalized.admission["collateral_rejected"] is True
     assert finalized.training_projection is None
+
+
+def test_scaffold_projection_rejects_unlinked_or_duplicate_observations():
+    call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": APPWORLD_PYTHON_TOOL_NAME, "arguments": '{"code":"complete()"}'},
+    }
+    messages = [
+        {"role": "assistant", "content": "```python\ncomplete()\n```", "tool_calls": [call]},
+        {"role": "tool", "name": APPWORLD_PYTHON_TOOL_NAME, "tool_call_id": "call-1", "content": "done"},
+    ]
+    assert project_appworld_messages_for_react_scaffold(messages) == [
+        {"role": "assistant", "content": "```python\ncomplete()\n```"},
+        {"role": "user", "content": "done"},
+    ]
+
+    unlinked = [{"role": "tool", "name": APPWORLD_PYTHON_TOOL_NAME, "tool_call_id": "missing", "content": "done"}]
+    with pytest.raises(ValueError, match="unknown action"):
+        project_appworld_messages_for_react_scaffold(unlinked)
+
+    with pytest.raises(ValueError, match="duplicate observations"):
+        project_appworld_messages_for_react_scaffold(messages + [messages[-1]])

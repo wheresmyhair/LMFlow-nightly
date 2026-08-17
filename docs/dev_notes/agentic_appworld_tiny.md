@@ -95,6 +95,16 @@ published run directory. Structured API audit fields redact token/password
 keys; AppWorld's raw local logs can still contain synthetic benchmark
 credentials and therefore remain protected artifacts outside Git.
 
+Conversation projection v2 separates Dataset semantics from scaffold transport.
+Assistant code blocks carry a stable parsed `appworld_python_repl` action, and
+environment feedback uses `role: tool` with the matching action ID. The pinned
+AppWorld ReAct-code scaffold still expects that feedback as a `role: user`
+`Output:` block, so a benchmark-local deterministic projector restores the
+official model-visible messages before both online model requests and SFT
+tokenization. Parsed actions are explicitly marked as non-native provider tool
+calls. The raw artifact remains authoritative, and its semantic conversation
+can be regenerated without another environment or teacher run.
+
 Example full tiny run (the model server is managed separately):
 
 ```bash
