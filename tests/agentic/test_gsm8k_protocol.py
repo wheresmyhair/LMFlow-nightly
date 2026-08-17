@@ -33,21 +33,28 @@ from lmflow.datasets import Dataset
 def test_protocol_splits_are_deterministic_disjoint_and_nested():
     train_source, training = gsm8k_protocol_indices("training")
     development_source, development = gsm8k_protocol_indices("development")
+    development128_source, development128 = gsm8k_protocol_indices("development128")
     test_source, smoke = gsm8k_protocol_indices("smoke")
     _, repeat = gsm8k_protocol_indices("repeat")
     _, decision = gsm8k_protocol_indices("decision")
     _, heldout = gsm8k_protocol_indices("heldout")
 
-    assert train_source == development_source == "train"
+    assert train_source == development_source == development128_source == "train"
     assert test_source == "test"
     assert len(training) == GSM8K_PROTOCOL_SPLIT_SIZES["training"]
     assert len(development) == GSM8K_PROTOCOL_SPLIT_SIZES["development"]
+    assert len(development128) == GSM8K_PROTOCOL_SPLIT_SIZES["development128"]
     assert set(training).isdisjoint(development)
     assert set(training).union(development) == set(range(7473))
+    assert development128 == development[:128]
     assert smoke == repeat[:16]
     assert repeat == decision[:128]
     assert heldout == tuple(range(1319))
     assert gsm8k_protocol_indices("decision")[1] == decision
+    assert (
+        canonical_json_sha256([canonical_gsm8k_instance_id("train", index) for index in development128])
+        == "4dead906e475ea6e75a35186451d95a7a64d4faabb6dd0d458fd580d3846e633"
+    )
     assert (
         canonical_json_sha256([canonical_gsm8k_instance_id("test", index) for index in smoke])
         == "6794b26ec1e879785b410f40b151d0673f5928e31bd1bda0045d7681f8683b0f"
@@ -109,6 +116,52 @@ def test_pinned_loader_preserves_source_identity_and_hides_content_from_manifest
     assert "Question " not in manifest_text
     assert "Reasoning" not in manifest_text
     assert "gold" not in manifest_text
+
+
+def test_development128_loader_preserves_nested_source_identity(monkeypatch):
+    rows = [{"question": f"Question {index}?", "answer": f"Reasoning. #### {index}"} for index in range(7473)]
+    monkeypatch.setattr(protocol, "load_dataset", lambda *args, **kwargs: _SourceDataset(rows))
+    monkeypatch.setattr(protocol, "_EXPECTED_SOURCE_CONTENT_SHA256", {})
+
+    dataset, manifest = load_pinned_gsm8k_dataset("development128")
+
+    source_indices = [row["source_index"] for row in dataset.to_list()]
+    assert source_indices == list(gsm8k_protocol_indices("development")[1][:128])
+    assert manifest["source_split"] == "train"
+    assert manifest["protocol_split"] == "development128"
+    assert manifest["selection"] == {
+        "algorithm": "sha256-ranked-canonical-id/v1",
+        "seed": protocol.GSM8K_SPLIT_SEED,
+    }
+    assert manifest["instance_count"] == 128
+    assert manifest["ordered_instance_ids_sha256"] == canonical_json_sha256(
+        [row["instance_id"] for row in dataset.to_list()]
+    )
+    verify_manifest_digest(manifest)
+
+
+def test_evaluation_cli_accepts_development128_split():
+    arguments = evaluation_cli._build_parser().parse_args(
+        [
+            "run",
+            "--artifact-dir",
+            "artifacts/run",
+            "--run-id",
+            "development128-run",
+            "--base-url",
+            "http://127.0.0.1:8000/v1",
+            "--served-model-name",
+            "Qwen/Qwen3-8B",
+            "--tokenizer-path",
+            "models/Qwen3-8B",
+            "--backend-version",
+            "0.25.1",
+            "--split",
+            "development128",
+        ]
+    )
+
+    assert arguments.split == "development128"
 
 
 def test_pinned_loader_rejects_content_drift(monkeypatch):

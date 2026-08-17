@@ -34,13 +34,22 @@ GSM8K_SOURCE_SPLIT_SIZES = {"train": 7473, "test": 1319}
 GSM8K_PROTOCOL_SPLIT_SIZES = {
     "training": 6961,
     "development": 512,
+    "development128": 128,
     "smoke": 16,
     "repeat": 128,
     "decision": 512,
     "heldout": 1319,
 }
 
-ProtocolSplit = Literal["training", "development", "smoke", "repeat", "decision", "heldout"]
+ProtocolSplit = Literal[
+    "training",
+    "development",
+    "development128",
+    "smoke",
+    "repeat",
+    "decision",
+    "heldout",
+]
 
 _EXPECTED_SOURCE_CONTENT_SHA256 = {
     "train": "de809f480930a9568f011158cf15c6d8bad5eda51efb29216a324c30d5f76ff5",
@@ -124,7 +133,7 @@ def gsm8k_protocol_indices(split: ProtocolSplit) -> tuple[str, tuple[int, ...]]:
 
     if split not in GSM8K_PROTOCOL_SPLIT_SIZES:
         raise ValueError(f"unsupported GSM8K protocol split {split!r}")
-    if split == "development":
+    if split in {"development", "development128"}:
         return "train", tuple(_ranked_indices("train")[: GSM8K_PROTOCOL_SPLIT_SIZES[split]])
     if split == "training":
         development = set(_ranked_indices("train")[: GSM8K_PROTOCOL_SPLIT_SIZES["development"]])
