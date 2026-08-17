@@ -35,7 +35,10 @@ from lmflow.agentic.scaffolds.appworld_react_code.scaffold import (
 
 APPWORLD_EPISODE_FORMAT_VERSION = "lmflow.appworld-episode/v1"
 APPWORLD_REPLAY_FORMAT_VERSION = "lmflow.appworld-replay/v1"
-APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION = "lmflow.appworld-conversation-projection/v1"
+APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION = "lmflow.appworld-conversation-projection/v2"
+APPWORLD_REACT_TRAINING_PROJECTION_FORMAT_VERSION = "lmflow.appworld-react-conversation-projection/v1"
+APPWORLD_REACT_MESSAGE_PROJECTION_ID = "appworld.simplified-react-code/v1"
+APPWORLD_PYTHON_TOOL_NAME = "appworld_python_repl"
 _EXECUTION_FAILURE_PREFIX = "Execution failed. Traceback:"
 _SENSITIVE_KEY_PARTS = ("access_token", "authorization", "password", "secret", "token")
 _FREEZEGUN_IGNORE_PREFIXES = ("vllm",)
@@ -142,6 +145,279 @@ def _sum_usage(steps: list[dict[str, Any]]) -> dict[str, Any]:
 def _observation_message(output: str) -> str:
     maybe_new_line = "\n" if not output.endswith("\n") else ""
     return "Output:\n```\n" + output + maybe_new_line + "```\n\n"
+
+
+def _parsed_python_tool_call(call_id: str, code: str) -> dict[str, Any]:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": APPWORLD_PYTHON_TOOL_NAME,
+            "arguments": json.dumps(
+                {"code": code},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        },
+        "extra": {
+            "origin": "parsed_assistant_content",
+            "native_provider_tool_call": False,
+        },
+    }
+
+
+def _canonical_reference_messages(
+    messages: list[dict[str, Any]],
+    *,
+    trajectory_id: str,
+) -> list[dict[str, Any]]:
+    """Give prompt demonstrations semantic tool roles without changing their text."""
+
+    canonical_messages: list[dict[str, Any]] = []
+    pending_call_id: str | None = None
+    action_index = 0
+    for raw_message in messages:
+        message = copy.deepcopy(raw_message)
+        role = message.get("role")
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise TypeError("AppWorld reference messages must contain text content")
+        if role == "assistant":
+            message["loss"] = False
+            code, _ = extract_first_python_code(content)
+            if code.strip():
+                action_index += 1
+                pending_call_id = f"{trajectory_id}:prompt-action-{action_index:03d}"
+                message["tool_calls"] = [_parsed_python_tool_call(pending_call_id, code)]
+            else:
+                pending_call_id = None
+        elif role == "user" and pending_call_id is not None and content.startswith("Output:\n```\n"):
+            message = {
+                "role": "tool",
+                "name": APPWORLD_PYTHON_TOOL_NAME,
+                "tool_call_id": pending_call_id,
+                "content": content,
+            }
+            pending_call_id = None
+        else:
+            pending_call_id = None
+        canonical_messages.append(message)
+    return canonical_messages
+
+
+def project_appworld_messages_for_react_scaffold(
+    messages: list[dict[str, Any]],
+    *,
+    preserve_loss: bool = False,
+) -> list[dict[str, Any]]:
+    """Project semantic AppWorld messages to the official model-visible roles.
+
+    AppWorld's pinned ReAct-code scaffold sends Python execution observations as
+    ``user`` messages containing ``Output:`` blocks. LMFlow keeps them as semantic
+    ``tool`` messages in Dataset views, then applies this projection both for
+    online model requests and before SFT tokenization.
+    """
+
+    if not isinstance(messages, list):
+        raise TypeError("AppWorld messages must be a list")
+    known_calls: dict[str, str] = {}
+    observed_calls: set[str] = set()
+    projected_messages: list[dict[str, Any]] = []
+    for index, raw_message in enumerate(messages):
+        if not isinstance(raw_message, Mapping):
+            raise TypeError(f"AppWorld message {index} must be a mapping")
+        role = raw_message.get("role")
+        content = raw_message.get("content")
+        if not isinstance(content, str):
+            raise TypeError(f"AppWorld message {index} must contain text content")
+        if role in {"system", "user"}:
+            projected_messages.append({"role": role, "content": content})
+            continue
+        if role == "assistant":
+            projected = {"role": "assistant", "content": content}
+            if preserve_loss and "loss" in raw_message:
+                loss = raw_message.get("loss")
+                if loss is not None and not isinstance(loss, bool):
+                    raise TypeError(f"AppWorld assistant message {index} loss must be a boolean or null")
+                projected["loss"] = loss
+            reasoning_content = raw_message.get("reasoning_content")
+            if reasoning_content is not None:
+                if not isinstance(reasoning_content, str):
+                    raise TypeError(f"AppWorld assistant message {index} reasoning_content must be text")
+                projected["reasoning_content"] = reasoning_content
+            raw_calls = raw_message.get("tool_calls", [])
+            if not isinstance(raw_calls, list):
+                raise TypeError(f"AppWorld assistant message {index} tool_calls must be a list")
+            for call_index, raw_call in enumerate(raw_calls):
+                if not isinstance(raw_call, Mapping):
+                    raise TypeError(f"AppWorld assistant message {index} tool call {call_index} must be a mapping")
+                call_id = raw_call.get("id")
+                function = raw_call.get("function")
+                if not isinstance(call_id, str) or not call_id:
+                    raise ValueError(f"AppWorld assistant message {index} tool call {call_index} has no id")
+                if call_id in known_calls:
+                    raise ValueError(f"AppWorld tool call id is duplicated: {call_id!r}")
+                if not isinstance(function, Mapping) or function.get("name") != APPWORLD_PYTHON_TOOL_NAME:
+                    raise ValueError("AppWorld semantic conversations may only contain parsed Python actions")
+                known_calls[call_id] = APPWORLD_PYTHON_TOOL_NAME
+            projected_messages.append(projected)
+            continue
+        if role == "tool":
+            call_id = raw_message.get("tool_call_id")
+            if not isinstance(call_id, str) or call_id not in known_calls:
+                raise ValueError(f"AppWorld tool message {index} references an unknown action")
+            if call_id in observed_calls:
+                raise ValueError(f"AppWorld tool call has duplicate observations: {call_id!r}")
+            if raw_message.get("name") != known_calls[call_id]:
+                raise ValueError(f"AppWorld tool message {index} has the wrong tool name")
+            observed_calls.add(call_id)
+            projected_messages.append({"role": "user", "content": content})
+            continue
+        raise ValueError(f"Unsupported AppWorld semantic role at message {index}: {role!r}")
+    return projected_messages
+
+
+def project_appworld_conversation_for_react_scaffold(conversation: Mapping[str, Any]) -> dict[str, Any]:
+    """Create a training-ready, scaffold-exact conversation Dataset view."""
+
+    if not isinstance(conversation, Mapping):
+        raise TypeError("AppWorld conversation must be a mapping")
+    if conversation.get("type") != "conversation":
+        raise ValueError("AppWorld conversation must use the LMFlow conversation Dataset type")
+    instances = conversation.get("instances")
+    if not isinstance(instances, list) or len(instances) != 1 or not isinstance(instances[0], Mapping):
+        raise ValueError("AppWorld conversation must contain exactly one instance")
+    result = copy.deepcopy(dict(conversation))
+    instance = result["instances"][0]
+    metadata = instance.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("AppWorld conversation metadata is missing")
+    if metadata.get("format_version") != APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION:
+        raise ValueError("AppWorld conversation has an unsupported semantic format")
+    messages = instance.get("messages")
+    instance["messages"] = project_appworld_messages_for_react_scaffold(messages, preserve_loss=True)
+    projected_metadata = copy.deepcopy(dict(metadata))
+    projected_metadata.update(
+        {
+            "format_version": APPWORLD_REACT_TRAINING_PROJECTION_FORMAT_VERSION,
+            "source_semantic_format_version": APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION,
+            "projection_kind": "scaffold_exact",
+            "scaffold_message_projection": APPWORLD_REACT_MESSAGE_PROJECTION_ID,
+            "requires_scaffold_projection": False,
+        }
+    )
+    instance["metadata"] = projected_metadata
+    return result
+
+
+def appworld_artifact_to_semantic_conversation(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive the semantic conversation view from an immutable episode artifact."""
+
+    if not isinstance(artifact, Mapping):
+        raise TypeError("AppWorld artifact must be a mapping")
+    verify_manifest_digest(artifact)
+    if artifact.get("format_version") != APPWORLD_EPISODE_FORMAT_VERSION:
+        raise ValueError("artifact is not an AppWorld episode")
+    trajectory_id = artifact.get("trajectory_id")
+    initial_messages = artifact.get("initial_messages")
+    model_steps = artifact.get("model_steps")
+    action_steps = artifact.get("action_steps")
+    if not isinstance(trajectory_id, str) or not trajectory_id:
+        raise ValueError("AppWorld artifact has no trajectory id")
+    if not isinstance(initial_messages, list):
+        raise ValueError("AppWorld artifact initial messages are missing")
+    if not isinstance(model_steps, list) or not isinstance(action_steps, list):
+        raise ValueError("AppWorld artifact model/action steps are missing")
+    task = artifact.get("task")
+    metrics = artifact.get("metrics")
+    if not isinstance(task, Mapping) or not isinstance(metrics, Mapping):
+        raise ValueError("AppWorld artifact task or metrics are missing")
+
+    messages = _canonical_reference_messages(initial_messages, trajectory_id=trajectory_id)
+    actions_by_step = {step.get("step_number"): step for step in action_steps if isinstance(step, Mapping)}
+    if len(actions_by_step) != len(action_steps):
+        raise ValueError("AppWorld artifact action step numbers must be unique")
+    model_step_numbers = []
+    for index, model_step in enumerate(model_steps):
+        if not isinstance(model_step, Mapping):
+            raise TypeError(f"AppWorld model step {index} must be a mapping")
+        step_number = model_step.get("step_number")
+        content = model_step.get("content")
+        if not isinstance(step_number, int) or isinstance(step_number, bool):
+            raise ValueError(f"AppWorld model step {index} has no integer step number")
+        if not isinstance(content, str):
+            raise TypeError(f"AppWorld model step {index} content must be text")
+        model_step_numbers.append(step_number)
+        action = actions_by_step.get(step_number)
+        if action is None:
+            code, _ = extract_first_python_code(content)
+            loss = False
+        else:
+            code = action.get("code")
+            if not isinstance(code, str):
+                raise TypeError(f"AppWorld action step {step_number} code must be text")
+            loss = action.get("valid") is True
+        call_id = f"{trajectory_id}:action-{step_number:03d}"
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": content + "\n\n",
+            "loss": loss,
+            "tool_calls": [_parsed_python_tool_call(call_id, code)],
+        }
+        reasoning_content = model_step.get("reasoning_content")
+        if reasoning_content is not None:
+            if not isinstance(reasoning_content, str):
+                raise TypeError(f"AppWorld model step {index} reasoning_content must be text")
+            assistant_message["reasoning_content"] = reasoning_content
+        messages.append(assistant_message)
+
+        has_later_model_step = index + 1 < len(model_steps)
+        observation_was_visible = has_later_model_step or (
+            index == len(model_steps) - 1 and metrics.get("termination_reason") == "model_backend_error"
+        )
+        if observation_was_visible:
+            if action is None:
+                raise ValueError(f"AppWorld model step {step_number} has a later turn but no executed action")
+            output = action.get("output")
+            if not isinstance(output, str):
+                raise TypeError(f"AppWorld action step {step_number} output must be text")
+            messages.append(
+                {
+                    "role": "tool",
+                    "name": APPWORLD_PYTHON_TOOL_NAME,
+                    "tool_call_id": call_id,
+                    "content": _observation_message(output),
+                }
+            )
+    if len(set(model_step_numbers)) != len(model_step_numbers):
+        raise ValueError("AppWorld artifact model step numbers must be unique")
+
+    return {
+        "type": "conversation",
+        "instances": [
+            {
+                "conversation_id": trajectory_id,
+                "messages": messages,
+                "metadata": {
+                    "format_version": APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION,
+                    "source_artifact_sha256": artifact["manifest_sha256"],
+                    "task_id": task.get("task_id"),
+                    "official_success": metrics.get("success") is True,
+                    "semantic_roles": True,
+                    "observation_role": "tool",
+                    "parsed_action_tool": APPWORLD_PYTHON_TOOL_NAME,
+                    "parsed_action_native_provider_tool_call": False,
+                    "requires_scaffold_projection": True,
+                    "scaffold_message_projection": APPWORLD_REACT_MESSAGE_PROJECTION_ID,
+                    "replay_required": True,
+                    "eligible_for_success_only_sft": False,
+                    "eligible_for_success_plus_recovery_sft": False,
+                },
+            }
+        ],
+    }
 
 
 def _action_is_valid(code: str, output: str) -> bool:
@@ -282,25 +558,28 @@ def run_appworld_episode(
         raw_output_directory = Path(world.output_directory)
         initial_state_sha256 = _directory_digest(Path(world.output_db_home_path_on_disk))
         initial_messages = render_reference_messages(prompt, world.task)
-        history = copy.deepcopy(initial_messages)
-        training_messages = []
-        for message in initial_messages:
-            projected = copy.deepcopy(message)
-            if projected["role"] == "assistant":
-                projected["loss"] = False
-            training_messages.append(projected)
+        training_messages = _canonical_reference_messages(initial_messages, trajectory_id=trajectory_id)
         last_execution_output: str | None = None
+        last_action_call_id: str | None = None
 
         for step_number in range(1, max_steps + 1):
             if last_execution_output is not None:
+                if last_action_call_id is None:
+                    raise RuntimeError("AppWorld observation is missing its source action")
                 observation = _observation_message(last_execution_output)
-                history.append({"role": "user", "content": observation})
-                training_messages.append({"role": "user", "content": observation})
+                training_messages.append(
+                    {
+                        "role": "tool",
+                        "name": APPWORLD_PYTHON_TOOL_NAME,
+                        "tool_call_id": last_action_call_id,
+                        "content": observation,
+                    }
+                )
 
             model_started_at = _monotonic_clock()
             try:
                 response = backend.complete(
-                    messages=copy.deepcopy(history),
+                    messages=project_appworld_messages_for_react_scaffold(training_messages),
                     tools=[],
                     model_name=model_name,
                     model_kwargs=copy.deepcopy(dict(model_kwargs)),
@@ -315,7 +594,8 @@ def run_appworld_episode(
             assistant_message: dict[str, Any] = {"role": "assistant", "content": fixed_content + "\n\n"}
             if completion["reasoning_content"] is not None:
                 assistant_message["reasoning_content"] = completion["reasoning_content"]
-            history.append(copy.deepcopy(assistant_message))
+            last_action_call_id = f"{trajectory_id}:action-{step_number:03d}"
+            assistant_message["tool_calls"] = [_parsed_python_tool_call(last_action_call_id, code)]
             training_message = copy.deepcopy(assistant_message)
             training_message["loss"] = True
             training_messages.append(training_message)
@@ -339,6 +619,7 @@ def run_appworld_episode(
             try:
                 execution_output = world.execute(code)
             except Exception as error:
+                training_message["loss"] = False
                 runner_error = {"type": type(error).__name__, "message": str(error)}
                 termination_reason = "environment_error"
                 break
@@ -463,23 +744,9 @@ def run_appworld_episode(
             "metrics": metrics,
         }
     )
-    projection_instance = {
-        "conversation_id": trajectory_id,
-        "messages": training_messages,
-        "metadata": {
-            "format_version": APPWORLD_TRAINING_PROJECTION_FORMAT_VERSION,
-            "source_artifact_sha256": artifact["manifest_sha256"],
-            "task_id": task_id,
-            "official_success": official_success,
-            "replay_required": True,
-            "eligible_for_success_only_sft": False,
-            "eligible_for_success_plus_recovery_sft": False,
-        },
-    }
-    training_projection = {
-        "type": "conversation",
-        "instances": [projection_instance],
-    }
+    training_projection = appworld_artifact_to_semantic_conversation(artifact)
+    if training_projection["instances"][0]["messages"] != training_messages:
+        raise RuntimeError("AppWorld online messages and artifact-derived semantic projection diverged")
     return AppWorldEpisodeResult(
         artifact=artifact,
         training_projection=training_projection,
