@@ -5,6 +5,11 @@ commit `b124aa46534cbf2fb8bc8af11405774984c42ac7`. The model may call
 `calc_gsm8k_reward` with a candidate answer, receive binary feedback, and revise
 its answer before returning the final response.
 
+This reward-tool path remains useful for reproducing the upstream behavior, but
+it is not the formal calculator cold-start source below. Its binary observation
+is derived from the gold answer, while the calculator protocol exposes only the
+result of executing a model-supplied arithmetic expression.
+
 `gsm8k_example_to_task()` converts one official `openai/gsm8k` row into the
 shared `TaskSpec`. Ground truth is stored in environment arguments and is not
 included in the initial model-visible messages. `run_gsm8k_tool_episode()` uses
@@ -210,6 +215,64 @@ correctness is already at least 95%, calculator-minus-direct is below two
 percentage points, and fewer than 5% of cases expose a trainable tool/recovery
 gap, keep GSM8K to bounded SFT/GRPO correctness smokes and regression coverage.
 
+## Verified public-annotation cold-start data
+
+The first calculator-protocol SFT control uses only the pinned 6,961-row
+`training` partition. It mechanically replaces public GSM8K
+`<<expression=result>>` annotations with `calculate(expression)` calls. Every
+observation is recomputed by the same restricted calculator used during
+evaluation. A row enters class A only when every recomputed result matches the
+public annotation and the projected final answer passes the strict numeric
+verifier. Rows with no annotation, more than four calls, malformed arithmetic,
+or any replay mismatch are excluded.
+
+Each admitted task produces a calculator conversation and a paired direct
+conversation. This preserves a direct-answer retention control without using
+additional tasks. Gold answers, verifier inputs, and reward values are absent
+from both model-visible messages and portable provenance. The replay file keeps
+only audit outcomes, expressions, freshly computed observations, stable source
+identity, and content digests.
+
+Build the E0 replay/mask/leakage smoke with eight tasks and sixteen paired
+conversations:
+
+```bash
+python -m lmflow.agentic.prepare_gsm8k_cold_start \
+  --artifact-dir artifacts/gsm8k-cold-start-e0 \
+  --run-id gsm8k-cold-start-e0 \
+  --task-count 8 \
+  --tokenizer-path /path/to/pinned/Qwen3-8B \
+  --block-size 2048
+```
+
+The deterministic selector ranks stable source identities by SHA-256 and draws
+round-robin from rows containing one through four calculator annotations. The
+eight-task E0 therefore contains two examples at each call count and is a
+prefix of a larger run with the same seed. Use `--task-count 32` for the initial
+32 calculator + 32 paired-direct SFT-64 dataset.
+
+The factory fails closed if source identities or row digests do not match the
+pinned source manifest, if an assistant loss mask is missing, or if any
+conversation would be truncated. It uses LMFlow's actual generation-aware
+Qwen3 training template for token and mask accounting, and records both the
+local tokenizer-file identity and LMFlow template digest without persisting a
+machine-local path. Publication is atomic:
+
+```text
+gsm8k-cold-start-e0/
+  artifact_manifest.json
+  data_manifest.json
+  source_dataset_manifest.json
+  replay.jsonl
+  report.json
+  dataset/
+    data.json
+```
+
+Keep these generated artifacts outside the product repository. The nested
+`dataset/` directory is directly loadable by LMFlow and is the only path passed
+to the Finetuner.
+
 ## Qwen3-8B cold-start SFT
 
 The generated `dataset/` directory is directly consumable by LMFlow's existing
@@ -219,7 +282,7 @@ Finetuner. A single-GPU LoRA run can start with:
 accelerate launch --config_file configs/accelerate_singlegpu_config.yaml \
   examples/finetune.py \
   --model_name_or_path Qwen/Qwen3-8B \
-  --dataset_path gsm8k-tool-run/dataset \
+  --dataset_path artifacts/gsm8k-cold-start-sft64/dataset \
   --output_dir output_models/qwen3-8b-gsm8k-tool-lora \
   --conversation_template qwen3 \
   --train_on_prompt false \
@@ -249,10 +312,10 @@ accelerate launch --config_file configs/accelerate_singlegpu_config.yaml \
   --seed 42
 ```
 
-The explicit Qwen3 template keeps system, tool-call, tool-observation, and final
-answer structure aligned with data construction. `train_on_prompt=false` trains
-only assistant spans, including both the reward-tool action and the answer that
-follows its feedback. The LoRA target set covers attention and MLP projections;
+The explicit Qwen3 template keeps system, calculator-call, tool-observation, and
+final-answer structure aligned with data construction. `train_on_prompt=false`
+trains only assistant spans, including calculator actions and the reasoning that
+follows observations. The LoRA target set covers attention and MLP projections;
 reduce rank or block size first when a development GPU has insufficient memory.
 Large sharded checkpoints can also exceed a low process file-descriptor limit.
 Check `ulimit -n` before launch; for example, WSL users can prefix the command
