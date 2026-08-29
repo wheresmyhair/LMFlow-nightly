@@ -142,7 +142,7 @@ python -m lmflow.agentic.evaluate_gsm8k run \
   --backend-version 0.25.1 \
   --served-max-model-len 16384 \
   --served-dtype bfloat16 \
-  --tool-call-parser qwen3_xml \
+  --tool-call-parser hermes \
   --reasoning-parser qwen3 \
   --generation-config vllm \
   --served-model-runner v1 \
@@ -153,6 +153,14 @@ python -m lmflow.agentic.evaluate_gsm8k run \
   --sampling-seed 0 \
   --max-concurrency 2
 ```
+
+The pinned Qwen3-8B chat template serializes calls as a JSON object inside
+`<tool_call>...</tool_call>`, which matches vLLM's `hermes` parser. The
+`qwen3_xml` parser targets the named `<function>/<parameter>` protocol and does
+not match this model revision's template or the SFT serialization. In
+particular, forced structured decoding with that parser can preserve JSON
+string quotes inside a parameter value and turn `2 + 3` into the invalid
+calculator expression `"2 + 3"`.
 
 The fixed primary behavior is Qwen3 thinking enabled, temperature 0.6,
 top-p 0.95, top-k 20, and min-p 0. The direct profile permits one model call;

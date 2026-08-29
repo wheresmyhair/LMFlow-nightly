@@ -54,6 +54,7 @@ _TOP_P = 0.95
 _TOP_K = 20
 _MIN_P = 0.0
 _ENABLE_THINKING = True
+_PINNED_QWEN3_8B_TOOL_CALL_PARSER = "hermes"
 _DIRECT_BUDGET = EvaluationBudget(
     max_model_calls=1,
     max_tool_calls=0,
@@ -236,7 +237,7 @@ def run_gsm8k_baseline(
     endpoint_label: str = "local-vllm",
     served_max_model_len: int = 16384,
     served_dtype: str = "bfloat16",
-    tool_call_parser: str = "qwen3_xml",
+    tool_call_parser: str = _PINNED_QWEN3_8B_TOOL_CALL_PARSER,
     reasoning_parser: str = "qwen3",
     generation_config: str = "vllm",
     served_model_runner: str = "v1",
@@ -509,7 +510,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--endpoint-label", default="local-vllm")
     run.add_argument("--served-max-model-len", type=_positive_int, default=16384)
     run.add_argument("--served-dtype", default="bfloat16")
-    run.add_argument("--tool-call-parser", default="qwen3_xml")
+    run.add_argument("--tool-call-parser", default=_PINNED_QWEN3_8B_TOOL_CALL_PARSER)
     run.add_argument("--reasoning-parser", default="qwen3")
     run.add_argument("--generation-config", default="vllm")
     run.add_argument("--served-model-runner", choices=["v1", "v2"], default="v1")

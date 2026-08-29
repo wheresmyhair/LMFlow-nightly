@@ -162,6 +162,7 @@ def test_evaluation_cli_accepts_development128_split():
     )
 
     assert arguments.split == "development128"
+    assert arguments.tool_call_parser == "hermes"
 
 
 def test_pinned_loader_rejects_content_drift(monkeypatch):
@@ -421,6 +422,8 @@ def test_baseline_publishes_digested_path_portable_artifacts(monkeypatch, tmp_pa
     assert "secret-host" not in manifest_text
     assert "machine-tokenizer-path" not in manifest_text
     assert "provider-specific runner/backend behavior" in manifest_text
+    run_manifest = json.loads(manifest_text)
+    assert run_manifest["execution"]["served_engine"]["tool_call_parser"] == "hermes"
 
 
 def test_baseline_rejects_machine_paths_in_persisted_model_identity(tmp_path):
