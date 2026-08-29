@@ -37,7 +37,7 @@ from lmflow.agentic.vllm_token_native import (
 )
 from lmflow.utils.protocol import DataProto
 
-GSM8K_GRPO_ROLLOUT_FORMAT = "lmflow.gsm8k-grpo-rollout/v1"
+GSM8K_GRPO_ROLLOUT_FORMAT = "lmflow.gsm8k-grpo-rollout/v2"
 _CONTROLLED_MODEL_KWARGS = frozenset(
     {
         "logprobs",
@@ -339,6 +339,9 @@ class GSM8KTokenNativeRollout:
                     "finish_reason": token_call.finish_reason,
                     "input_tokens": len(token_call.prompt_token_ids),
                     "output_tokens": len(token_call.output_token_ids),
+                    "prompt_token_ids": list(token_call.prompt_token_ids),
+                    "output_token_ids": list(token_call.output_token_ids),
+                    "output_log_probs": list(token_call.output_log_probs),
                     "latency_seconds": call_latency_seconds,
                     "cost": completion["cost"],
                 }
@@ -410,9 +413,13 @@ class GSM8KTokenNativeRollout:
         else:
             termination_reason = "model_budget_exhausted"
 
+        optimize_calls = [False] + [True] * (len(token_calls) - 1)
+        for metadata, optimize in zip(call_metadata, optimize_calls, strict=True):
+            metadata["optimized"] = optimize
         sequence = assemble_vllm_chat_token_data(
             token_calls,
-            optimize_calls=[False] + [True] * (len(token_calls) - 1),
+            optimize_calls=optimize_calls,
+            anchor_to_first_optimized_call=True,
         )
         return {
             "sequence": sequence,
@@ -434,6 +441,7 @@ class GSM8KTokenNativeRollout:
                 "rollout_id": rollout_id,
                 "policy_version": policy_version,
                 "calls": call_metadata,
+                "training_anchor_call_index": sequence.call_spans[0]["call_index"],
                 "call_spans": [copy.deepcopy(span) for span in sequence.call_spans],
                 "termination_reason": termination_reason,
                 "tool_call_count": tool_call_count,

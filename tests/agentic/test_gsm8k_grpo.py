@@ -38,6 +38,7 @@ def _response(
     tool_calls=None,
     finish_reason="stop",
     logprobs=None,
+    reasoning=None,
 ):
     request_id = request["model_kwargs"]["extra_body"]["request_id"]
     if logprobs is None:
@@ -47,6 +48,8 @@ def _response(
         "content": content,
         "tool_calls": copy.deepcopy(tool_calls or []),
     }
+    if reasoning is not None:
+        message["reasoning"] = reasoning
     return {
         "message": message,
         "finish_reason": finish_reason,
@@ -99,6 +102,7 @@ class _TwoRolloutBackend:
                 ],
                 finish_reason="tool_calls",
                 logprobs=[-0.2, -0.3],
+                reasoning="Use the calculator before answering.",
             )
 
         prior_output = [20 + rollout_index, 30 + rollout_index]
@@ -275,8 +279,8 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
         rollouts.batch["old_log_probs"],
         torch.tensor(
             [
-                [0.0, 0.0, -0.2, -0.3, 0.0, -0.4, -0.5],
-                [0.0, 0.0, -0.2, -0.3, 0.0, -0.4, -0.5],
+                [0.0, 0.0, 0.0, 0.0, 0.0, -0.4, -0.5],
+                [0.0, 0.0, 0.0, 0.0, 0.0, -0.4, -0.5],
             ]
         ),
     )
@@ -286,8 +290,10 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
     assert backend.requests[0]["model_kwargs"]["seed"] == 7
     assert backend.requests[1]["model_kwargs"]["seed"] == 8
     assert backend.requests[2]["model_kwargs"]["seed"] == 11
+    assert backend.requests[1]["messages"][-2]["reasoning_content"] == "Use the calculator before answering."
     assert all(request["model_kwargs"]["logprobs"] is True for request in backend.requests)
     assert all(request["model_kwargs"]["extra_body"]["return_token_ids"] is True for request in backend.requests)
+    assert rollouts.non_tensor_batch["rollout_metadata"][0]["training_anchor_call_index"] == 1
     assert rollouts.non_tensor_batch["rollout_metadata"][0]["calls"] == [
         {
             "request_id": backend.requests[0]["model_kwargs"]["extra_body"]["request_id"],
@@ -296,8 +302,12 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
             "finish_reason": "tool_calls",
             "input_tokens": 2,
             "output_tokens": 2,
+            "prompt_token_ids": [1, 10],
+            "output_token_ids": [20, 30],
+            "output_log_probs": [-0.2, -0.3],
             "latency_seconds": 0.25,
             "cost": 0.0,
+            "optimized": False,
         },
         {
             "request_id": backend.requests[1]["model_kwargs"]["extra_body"]["request_id"],
@@ -306,8 +316,12 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
             "finish_reason": "stop",
             "input_tokens": 5,
             "output_tokens": 2,
+            "prompt_token_ids": [1, 10, 20, 30, 40],
+            "output_token_ids": [50, 60],
+            "output_log_probs": [-0.4, -0.5],
             "latency_seconds": 0.25,
             "cost": 0.0,
+            "optimized": True,
         },
     ]
 
@@ -327,11 +341,24 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
     }
 
 
-def test_rejects_structured_message_rerendering_that_changes_sampled_tokens():
+def test_anchors_training_to_actual_prompt_when_forced_call_is_rerendered():
     requests, _, _ = _requests(group_size=1)
 
-    with pytest.raises(ValueError, match="prefix drift"):
-        _rollout(_TwoRolloutBackend(drift=True))(requests)
+    rollouts = _rollout(_TwoRolloutBackend(drift=True))(requests)
+
+    torch.testing.assert_close(
+        rollouts.batch["input_ids"],
+        torch.tensor([[1, 10, 20, 99, 40, 50, 60]]),
+    )
+    torch.testing.assert_close(
+        rollouts.batch["old_log_probs"],
+        torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, -0.4, -0.5]]),
+    )
+    first_call = rollouts.non_tensor_batch["rollout_metadata"][0]["calls"][0]
+    assert first_call["output_token_ids"] == [20, 30]
+    assert first_call["output_log_probs"] == [-0.2, -0.3]
+    assert first_call["optimized"] is False
+    assert rollouts.non_tensor_batch["rollout_metadata"][0]["training_anchor_call_index"] == 1
 
 
 def test_preserves_invalid_sampled_tool_call_as_terminal_negative_rollout():
@@ -343,6 +370,7 @@ def test_preserves_invalid_sampled_tool_call_as_terminal_negative_rollout():
     assert rollouts.non_tensor_batch["tool_call_counts"].tolist() == [1]
     assert rollouts.non_tensor_batch["valid_tool_call_counts"].tolist() == [0]
     assert rollouts.non_tensor_batch["selected_token_counts"].tolist() == [0]
+    assert rollouts.non_tensor_batch["rollout_metadata"][0]["training_anchor_call_index"] == 0
     assert rollouts.batch["loss_mask"].sum().item() == 0.0
     torch.testing.assert_close(
         gsm8k_protocol_rewards(rollouts, {task.task_id: gold_answer}),

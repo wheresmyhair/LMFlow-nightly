@@ -112,6 +112,7 @@ def test_assembles_policy_and_environment_tokens_without_retokenizing():
     )
     assert actual.call_spans == (
         {
+            "call_index": 0,
             "request_id": "first",
             "response_id": "chatcmpl-first",
             "prompt_tokens": 2,
@@ -121,6 +122,7 @@ def test_assembles_policy_and_environment_tokens_without_retokenizing():
             "optimized": True,
         },
         {
+            "call_index": 1,
             "request_id": "second",
             "response_id": "chatcmpl-second",
             "prompt_tokens": 6,
@@ -143,6 +145,40 @@ def test_can_exclude_framework_forced_generation_from_policy_loss():
     torch.testing.assert_close(actual.loss_mask, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]))
     assert actual.call_spans[0]["optimized"] is False
     assert actual.call_spans[1]["optimized"] is True
+
+
+def test_can_anchor_training_to_the_actual_prompt_after_a_forced_call():
+    calls = [
+        VLLMChatTokenData("forced", "chatcmpl-forced", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
+        VLLMChatTokenData("policy", "chatcmpl-policy", (1, 2, 30, 40, 5), (6,), (-0.3,), "stop"),
+    ]
+
+    actual = assemble_vllm_chat_token_data(
+        calls,
+        optimize_calls=[False, True],
+        anchor_to_first_optimized_call=True,
+    )
+
+    torch.testing.assert_close(actual.input_ids, torch.tensor([1, 2, 30, 40, 5, 6]))
+    torch.testing.assert_close(actual.loss_mask, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]))
+    torch.testing.assert_close(actual.old_log_probs, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, -0.3]))
+    assert [span["request_id"] for span in actual.call_spans] == ["policy"]
+    assert actual.call_spans[0]["call_index"] == 1
+
+
+def test_anchored_sequence_still_rejects_drift_between_optimized_calls():
+    calls = [
+        VLLMChatTokenData("forced", "chatcmpl-forced", (1, 2), (3,), (-0.1,), "tool_calls"),
+        VLLMChatTokenData("policy-1", "chatcmpl-policy-1", (7, 8), (9,), (-0.2,), "tool_calls"),
+        VLLMChatTokenData("policy-2", "chatcmpl-policy-2", (7, 8, 99, 10), (11,), (-0.3,), "stop"),
+    ]
+
+    with pytest.raises(ValueError, match="prefix drift at position 2"):
+        assemble_vllm_chat_token_data(
+            calls,
+            optimize_calls=[False, True, True],
+            anchor_to_first_optimized_call=True,
+        )
 
 
 def test_fails_closed_when_next_turn_prompt_does_not_preserve_sampled_prefix():

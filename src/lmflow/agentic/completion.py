@@ -106,8 +106,15 @@ def normalize_completion_response(response: Mapping[str, Any]) -> dict[str, Any]
     if not isinstance(content, str):
         raise TypeError("completion message content must be a string or null")
     reasoning_content = message.get("reasoning_content")
+    provider_reasoning = message.get("reasoning")
     if reasoning_content is not None and not isinstance(reasoning_content, str):
         raise TypeError("completion message reasoning_content must be a string or null")
+    if provider_reasoning is not None and not isinstance(provider_reasoning, str):
+        raise TypeError("completion message reasoning must be a string or null")
+    if reasoning_content is not None and provider_reasoning is not None and reasoning_content != provider_reasoning:
+        raise ValueError("completion message reasoning and reasoning_content must match when both are present")
+    if reasoning_content is None:
+        reasoning_content = provider_reasoning
     tool_calls = message.get("tool_calls") or []
     if not isinstance(tool_calls, list):
         raise TypeError("completion message tool_calls must be a list")

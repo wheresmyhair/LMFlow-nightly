@@ -389,20 +389,24 @@ the returned ID must equal `chatcmpl-` plus the submitted request ID; both
 identities are retained in rollout provenance. Decoded token text is never
 accepted as sampled-token identity.
 
-For a multi-turn calculator episode, each later vLLM prompt must preserve the
-complete prior prompt and sampled output as an exact token prefix. The adapter
-then appends only the new environment/tool suffix with `loss_mask=0`, followed
-by the next sampled output with `loss_mask=1`. Any prefix drift caused by
-structured-message re-rendering fails closed instead of silently re-tokenizing
-the conversation.
-
 The first calculator action is forced with a named provider `tool_choice` for
-this bounded engineering acceptance. Its grammar-constrained output remains in
-the exact training context but is excluded from policy loss. Later unforced
-policy outputs are trainable. The current TRL correctness reference requires an
-untruncated sampling distribution (`temperature=1`, `top_p=1`, and no
-`top_k`, `min_p`, repetition, presence, frequency, or logit-bias transform) so
-vLLM old log-probs and trainer policy log-probs have the same meaning.
+this bounded engineering acceptance and is excluded from policy loss. Chat
+Completions may canonically re-render that audit-only assistant turn before the
+tool observation; Qwen3 reasoning and tool-call whitespace are one concrete
+case. The training sequence therefore starts from the first unforced policy
+call's actual vLLM prompt IDs, followed by that call's actual sampled output IDs
+and old log-probs. The forced call's exact prompt/output IDs and log-probs remain
+in rollout audit metadata. No sampled text is re-tokenized or substituted for
+provider token IDs.
+
+Any later trainable call must preserve the already assembled training sequence
+as an exact token prefix. Prefix drift between trainable calls still fails
+closed. vLLM 0.25.1 exposes parsed reasoning as `message.reasoning`; LMFlow
+normalizes that provider field to canonical `reasoning_content` for replay and
+rejects conflicting aliases. The current TRL correctness reference requires an
+untruncated sampling distribution (`temperature=1`, `top_p=1`, and no `top_k`,
+`min_p`, repetition, presence, frequency, or logit-bias transform) so vLLM old
+log-probs and trainer policy log-probs have the same meaning.
 
 `gsm8k_grpo_task_from_row()` returns the calculator `TaskSpec` and hidden gold
 answer separately. The task and rollout provenance contain canonical source
