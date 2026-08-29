@@ -369,3 +369,45 @@ adapter-only or distributed-checkpoint export strategy to avoid rank-zero CPU
 memory pressure. Treat the hyperparameters above as a reproducible bootstrap
 recipe and select production values on a fixed development split rather than
 from this smoke configuration.
+
+## Token-native synchronous GRPO readiness
+
+The synchronous GRPO reference consumes the existing `DataProto` fields
+`input_ids`, `attention_mask`, `loss_mask`, and `old_log_probs`. The GSM8K
+rollout adapter requests vLLM's provider-specific `return_token_ids` extension
+together with sampled-token log-probabilities. It requires every log-prob token
+label to use vLLM's `token_id:<id>` form and checks the response request ID.
+Decoded token text is never accepted as sampled-token identity.
+
+For a multi-turn calculator episode, each later vLLM prompt must preserve the
+complete prior prompt and sampled output as an exact token prefix. The adapter
+then appends only the new environment/tool suffix with `loss_mask=0`, followed
+by the next sampled output with `loss_mask=1`. Any prefix drift caused by
+structured-message re-rendering fails closed instead of silently re-tokenizing
+the conversation.
+
+The first calculator action is forced with a named provider `tool_choice` for
+this bounded engineering acceptance. Its grammar-constrained output remains in
+the exact training context but is excluded from policy loss. Later unforced
+policy outputs are trainable. The current TRL correctness reference requires an
+untruncated sampling distribution (`temperature=1`, `top_p=1`, and no
+`top_k`, `min_p`, repetition, presence, frequency, or logit-bias transform) so
+vLLM old log-probs and trainer policy log-probs have the same meaning.
+
+`gsm8k_grpo_task_from_row()` returns the calculator `TaskSpec` and hidden gold
+answer separately. The task and rollout provenance contain canonical source
+identity, model/tokenizer/checkpoint versions, sampling seeds, request IDs,
+finish reasons, token spans, and calculator execution counts, but no gold
+answer or verifier reward. `gsm8k_correctness_rewards()` computes the quality
+view, while `gsm8k_protocol_rewards()` separately requires correctness and at
+least one successfully executed calculator call. There is no additive tool
+bonus. Per-rollout records also expose model call counts, exact input/output
+token totals, elapsed model time, and provider-reported cost for operational
+diagnosis.
+
+The readiness gate uses K=8 groups from pinned training tasks that do not occur
+in the SFT data or development views. `summarize_gsm8k_group_variance()` reports
+mixed reward groups and separately identifies mixed groups whose every rollout
+has at least one unforced trainable token. A real optimizer update may consume
+only the latter. If no such group exists, the GSM8K GRPO experiment exits
+without expanding data or training budget.
