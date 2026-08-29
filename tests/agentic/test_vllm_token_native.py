@@ -12,11 +12,11 @@ from lmflow.agentic.vllm_token_native import (
 )
 
 
-def _completion(*, request_id="request-1", prompt=(1, 2), output=(3, 4), logprobs=(-0.1, -0.2)):
+def _completion(*, response_id="chatcmpl-request-1", prompt=(1, 2), output=(3, 4), logprobs=(-0.1, -0.2)):
     return {
         "finish_reason": "stop",
         "raw_response": {
-            "id": request_id,
+            "id": response_id,
             "prompt_token_ids": list(prompt),
             "choices": [
                 {
@@ -70,11 +70,21 @@ def test_extracts_exact_sampled_token_ids_and_log_probs():
 
     assert actual == VLLMChatTokenData(
         request_id="request-1",
+        response_id="chatcmpl-request-1",
         prompt_token_ids=(1, 2),
         output_token_ids=(3, 4),
         output_log_probs=(-0.1, -0.2),
         finish_reason="stop",
     )
+
+
+@pytest.mark.parametrize("response_id", ["request-1", "chatcmpl-wrong", "cmpl-request-1"])
+def test_rejects_response_ids_that_do_not_match_vllm_chat_completion_mapping(response_id):
+    with pytest.raises(ValueError, match="vLLM chat response ID mismatch"):
+        extract_vllm_chat_token_data(
+            _completion(response_id=response_id),
+            expected_request_id="request-1",
+        )
 
 
 def test_rejects_decoded_token_text_as_sampled_token_identity():
@@ -87,8 +97,8 @@ def test_rejects_decoded_token_text_as_sampled_token_identity():
 
 def test_assembles_policy_and_environment_tokens_without_retokenizing():
     calls = [
-        VLLMChatTokenData("first", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
-        VLLMChatTokenData("second", (1, 2, 3, 4, 5, 6), (7,), (-0.3,), "stop"),
+        VLLMChatTokenData("first", "chatcmpl-first", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
+        VLLMChatTokenData("second", "chatcmpl-second", (1, 2, 3, 4, 5, 6), (7,), (-0.3,), "stop"),
     ]
 
     actual = assemble_vllm_chat_token_data(calls)
@@ -103,6 +113,7 @@ def test_assembles_policy_and_environment_tokens_without_retokenizing():
     assert actual.call_spans == (
         {
             "request_id": "first",
+            "response_id": "chatcmpl-first",
             "prompt_tokens": 2,
             "output_start": 2,
             "output_end": 4,
@@ -111,6 +122,7 @@ def test_assembles_policy_and_environment_tokens_without_retokenizing():
         },
         {
             "request_id": "second",
+            "response_id": "chatcmpl-second",
             "prompt_tokens": 6,
             "output_start": 6,
             "output_end": 7,
@@ -122,8 +134,8 @@ def test_assembles_policy_and_environment_tokens_without_retokenizing():
 
 def test_can_exclude_framework_forced_generation_from_policy_loss():
     calls = [
-        VLLMChatTokenData("forced", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
-        VLLMChatTokenData("policy", (1, 2, 3, 4, 5), (6,), (-0.3,), "stop"),
+        VLLMChatTokenData("forced", "chatcmpl-forced", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
+        VLLMChatTokenData("policy", "chatcmpl-policy", (1, 2, 3, 4, 5), (6,), (-0.3,), "stop"),
     ]
 
     actual = assemble_vllm_chat_token_data(calls, optimize_calls=[False, True])
@@ -135,8 +147,8 @@ def test_can_exclude_framework_forced_generation_from_policy_loss():
 
 def test_fails_closed_when_next_turn_prompt_does_not_preserve_sampled_prefix():
     calls = [
-        VLLMChatTokenData("first", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
-        VLLMChatTokenData("second", (1, 2, 3, 99, 5), (6,), (-0.3,), "stop"),
+        VLLMChatTokenData("first", "chatcmpl-first", (1, 2), (3, 4), (-0.1, -0.2), "tool_calls"),
+        VLLMChatTokenData("second", "chatcmpl-second", (1, 2, 3, 99, 5), (6,), (-0.3,), "stop"),
     ]
 
     with pytest.raises(ValueError, match="prefix drift at position 3"):
@@ -154,7 +166,7 @@ def test_pinned_openai_sdk_preserves_vllm_token_metadata_without_network_access(
         return httpx.Response(
             200,
             json={
-                "id": "request-1",
+                "id": "chatcmpl-request-1",
                 "object": "chat.completion",
                 "created": 1,
                 "model": "served-model",
@@ -198,6 +210,8 @@ def test_pinned_openai_sdk_preserves_vllm_token_metadata_without_network_access(
         expected_request_id="request-1",
     )
     assert token_data.output_token_ids == (3, 4)
+    assert token_data.request_id == "request-1"
+    assert token_data.response_id == "chatcmpl-request-1"
     assert requests[0]["request_id"] == "request-1"
     assert requests[0]["return_token_ids"] is True
     assert requests[0]["return_tokens_as_token_ids"] is True

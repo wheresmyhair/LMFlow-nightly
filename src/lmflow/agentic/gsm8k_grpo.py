@@ -334,6 +334,7 @@ class GSM8KTokenNativeRollout:
             call_metadata.append(
                 {
                     "request_id": request_id,
+                    "response_id": token_call.response_id,
                     "sampling_seed": sampling_seed,
                     "finish_reason": token_call.finish_reason,
                     "input_tokens": len(token_call.prompt_token_ids),

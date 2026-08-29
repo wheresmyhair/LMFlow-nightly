@@ -51,7 +51,7 @@ def _response(
         "message": message,
         "finish_reason": finish_reason,
         "raw_response": {
-            "id": request_id,
+            "id": f"chatcmpl-{request_id}",
             "prompt_token_ids": list(prompt_token_ids),
             "choices": [
                 {
@@ -291,6 +291,7 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
     assert rollouts.non_tensor_batch["rollout_metadata"][0]["calls"] == [
         {
             "request_id": backend.requests[0]["model_kwargs"]["extra_body"]["request_id"],
+            "response_id": f"chatcmpl-{backend.requests[0]['model_kwargs']['extra_body']['request_id']}",
             "sampling_seed": 7,
             "finish_reason": "tool_calls",
             "input_tokens": 2,
@@ -300,6 +301,7 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
         },
         {
             "request_id": backend.requests[1]["model_kwargs"]["extra_body"]["request_id"],
+            "response_id": f"chatcmpl-{backend.requests[1]['model_kwargs']['extra_body']['request_id']}",
             "sampling_seed": 8,
             "finish_reason": "stop",
             "input_tokens": 5,

@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 _TOKEN_ID_PREFIX = "token_id:"
+_CHAT_COMPLETION_ID_PREFIX = "chatcmpl-"
 _CONTROLLED_EXTRA_BODY_FIELDS = frozenset(
     {
         "request_id",
@@ -26,6 +27,7 @@ class VLLMChatTokenData:
     """One vLLM chat call's actual prompt and sampled token data."""
 
     request_id: str
+    response_id: str
     prompt_token_ids: tuple[int, ...]
     output_token_ids: tuple[int, ...]
     output_log_probs: tuple[float, ...]
@@ -104,12 +106,15 @@ def extract_vllm_chat_token_data(
 
     if not isinstance(completion, Mapping):
         raise TypeError("completion must be a mapping")
+    if not isinstance(expected_request_id, str) or not expected_request_id.strip():
+        raise ValueError("expected_request_id must be a non-empty string")
     raw_response = completion.get("raw_response")
     if not isinstance(raw_response, Mapping):
         raise TypeError("completion.raw_response must be a mapping")
-    request_id = raw_response.get("id")
-    if request_id != expected_request_id:
-        raise ValueError(f"vLLM response request_id mismatch: expected {expected_request_id!r}, got {request_id!r}")
+    response_id = raw_response.get("id")
+    expected_response_id = f"{_CHAT_COMPLETION_ID_PREFIX}{expected_request_id}"
+    if response_id != expected_response_id:
+        raise ValueError(f"vLLM chat response ID mismatch: expected {expected_response_id!r}, got {response_id!r}")
 
     prompt_token_ids = _token_ids(
         raw_response.get("prompt_token_ids"),
@@ -162,7 +167,8 @@ def extract_vllm_chat_token_data(
         raise ValueError(f"normalized and raw finish reasons differ: {normalized_finish_reason!r} != {finish_reason!r}")
 
     return VLLMChatTokenData(
-        request_id=request_id,
+        request_id=expected_request_id,
+        response_id=response_id,
         prompt_token_ids=prompt_token_ids,
         output_token_ids=output_token_ids,
         output_log_probs=tuple(output_log_probs),
@@ -227,6 +233,7 @@ def assemble_vllm_chat_token_data(
         spans.append(
             {
                 "request_id": call.request_id,
+                "response_id": call.response_id,
                 "prompt_tokens": len(call.prompt_token_ids),
                 "output_start": output_start,
                 "output_end": output_end,

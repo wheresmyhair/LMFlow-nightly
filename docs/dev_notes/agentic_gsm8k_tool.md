@@ -376,8 +376,10 @@ The synchronous GRPO reference consumes the existing `DataProto` fields
 `input_ids`, `attention_mask`, `loss_mask`, and `old_log_probs`. The GSM8K
 rollout adapter requests vLLM's provider-specific `return_token_ids` extension
 together with sampled-token log-probabilities. It requires every log-prob token
-label to use vLLM's `token_id:<id>` form and checks the response request ID.
-Decoded token text is never accepted as sampled-token identity.
+label to use vLLM's `token_id:<id>` form. For vLLM 0.25.1 Chat Completions,
+the returned ID must equal `chatcmpl-` plus the submitted request ID; both
+identities are retained in rollout provenance. Decoded token text is never
+accepted as sampled-token identity.
 
 For a multi-turn calculator episode, each later vLLM prompt must preserve the
 complete prior prompt and sampled output as an exact token prefix. The adapter
