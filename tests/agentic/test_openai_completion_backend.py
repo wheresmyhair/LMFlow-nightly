@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lmflow.agentic.completion import normalize_completion_response
 from lmflow.agentic.scaffolds.mini_swe_agent import (
     LMFlowMiniSWEAgentModel,
     OpenAICompatibleCompletionBackend,
@@ -59,6 +60,37 @@ def _response(*, choices=1):
         "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
     }
     return SerializableResponse([choice] * choices, raw)
+
+
+@pytest.mark.parametrize("reasoning_field", ["reasoning", "reasoning_content"])
+def test_normalizes_provider_reasoning_aliases(reasoning_field):
+    response = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            reasoning_field: "Inspect the working tree first.",
+        },
+        "finish_reason": "stop",
+    }
+
+    normalized = normalize_completion_response(response)
+
+    assert normalized["reasoning_content"] == "Inspect the working tree first."
+
+
+def test_rejects_conflicting_provider_reasoning_aliases():
+    response = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "provider value",
+            "reasoning_content": "different value",
+        },
+        "finish_reason": "stop",
+    }
+
+    with pytest.raises(ValueError, match="reasoning and reasoning_content must match"):
+        normalize_completion_response(response)
 
 
 def test_backend_forwards_one_non_streaming_request_and_preserves_raw_response():
@@ -221,7 +253,7 @@ def test_backend_round_trips_the_pinned_openai_sdk_without_network_access():
             }
         )
         message = _response().payload["choices"][0]["message"]
-        message["reasoning_content"] = "Need to inspect the working tree first."
+        message["reasoning"] = "Need to inspect the working tree first."
         return httpx.Response(
             200,
             json={
@@ -251,6 +283,21 @@ def test_backend_round_trips_the_pinned_openai_sdk_without_network_access():
             model_name="served-model",
             model_kwargs={"temperature": 0.0},
         )
+        normalized = normalize_completion_response(result)
+        backend.complete(
+            messages=[
+                {"role": "user", "content": "Inspect the checkout."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": normalized["reasoning_content"],
+                    "tool_calls": [],
+                },
+            ],
+            tools=[],
+            model_name="served-model",
+            model_kwargs={"temperature": 0.0},
+        )
     finally:
         client.close()
 
@@ -264,8 +311,26 @@ def test_backend_round_trips_the_pinned_openai_sdk_without_network_access():
                 "temperature": 0.0,
                 "tools": [{"type": "function", "function": {"name": "bash"}}],
             },
-        }
+        },
+        {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "body": {
+                "messages": [
+                    {"role": "user", "content": "Inspect the checkout."},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "Need to inspect the working tree first.",
+                        "tool_calls": [],
+                    },
+                ],
+                "model": "served-model",
+                "temperature": 0.0,
+            },
+        },
     ]
     assert result["message"]["tool_calls"][0]["function"]["arguments"] == '{"command": "git status --short"}'
-    assert result["message"]["reasoning_content"] == "Need to inspect the working tree first."
+    assert result["message"]["reasoning"] == "Need to inspect the working tree first."
+    assert normalized["reasoning_content"] == "Need to inspect the working tree first."
     assert result["raw_response"]["usage"]["total_tokens"] == 20

@@ -180,8 +180,16 @@ def assemble_vllm_chat_token_data(
     calls: Sequence[VLLMChatTokenData],
     *,
     optimize_calls: Sequence[bool] | None = None,
+    anchor_to_first_optimized_call: bool = False,
 ) -> AssembledTokenSequence:
-    """Assemble exact multi-turn tokens and fail on any re-rendered prefix drift."""
+    """Assemble exact call tokens and fail on trainable-prefix drift.
+
+    ``anchor_to_first_optimized_call`` permits audit-only calls before the
+    training sequence. The sequence then starts from the actual vLLM prompt of
+    the first optimized call, so its old log-probs remain paired with the exact
+    context used during sampling. Later calls must still preserve that sampled
+    sequence exactly.
+    """
 
     if isinstance(calls, str | bytes) or not isinstance(calls, Sequence):
         raise TypeError("calls must be a sequence")
@@ -195,6 +203,12 @@ def assemble_vllm_chat_token_data(
         raise TypeError("optimize_calls must be a sequence of booleans")
     if len(optimize_calls) != len(calls) or any(not isinstance(value, bool) for value in optimize_calls):
         raise ValueError("optimize_calls must contain one boolean per token-native completion")
+    if not isinstance(anchor_to_first_optimized_call, bool):
+        raise TypeError("anchor_to_first_optimized_call must be a boolean")
+
+    start_index = 0
+    if anchor_to_first_optimized_call:
+        start_index = next((index for index, optimize in enumerate(optimize_calls) if optimize), len(calls) - 1)
 
     sequence: list[int] = []
     loss_mask: list[float] = []
@@ -202,8 +216,10 @@ def assemble_vllm_chat_token_data(
     spans = []
 
     for index, (call, optimize) in enumerate(zip(calls, optimize_calls, strict=True)):
+        if index < start_index:
+            continue
         prompt = list(call.prompt_token_ids)
-        if index == 0:
+        if index == start_index:
             sequence.extend(prompt)
             loss_mask.extend([0.0] * len(prompt))
             old_log_probs.extend([0.0] * len(prompt))
@@ -232,6 +248,7 @@ def assemble_vllm_chat_token_data(
         output_end = len(sequence)
         spans.append(
             {
+                "call_index": index,
                 "request_id": call.request_id,
                 "response_id": call.response_id,
                 "prompt_tokens": len(call.prompt_token_ids),
