@@ -1,4 +1,9 @@
-# TRL policy trainer adapter
+# Legacy TRL precomputed-loss adapter
+
+`TRLPolicyTrainer` is retained as a correctness reference for the existing
+LMFlow GRPO objective. It does not own the product GRPO training lifecycle.
+New sealed-rollout training uses the standard `GRPOTrainer.train()` path
+described in [TRL GRPO lifecycle bridge](agentic_trl_grpo_lifecycle.md).
 
 `TRLPolicyTrainer` is the first training-backend adapter for token-native
 Agentic updates. It accepts a causal language model, a TRL `GRPOConfig`, and a
@@ -32,6 +37,6 @@ adapter construction instead of silently changing the objective.
 The adapter uses an initialization-only dataset and zero reward function to
 satisfy `GRPOTrainer` construction. Neither is used by `compute_loss()` or
 `train_step()`; rollout and reward remain upstream LMFlow responsibilities.
-Later slices can add accumulation, scheduler/checkpoint ownership, distributed
-metric reduction, and full DDP/FSDP2 launch tests without changing the
-`DataProto` boundary.
+This manual step path must not be extended with additional Trainer lifecycle
+management. It remains useful for objective and gradient differential tests
+while the official-lifecycle backend is validated.

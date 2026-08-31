@@ -247,6 +247,15 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
 
     assert rollouts.meta_info["policy_version"] == "sft64-final"
     assert rollouts.meta_info["rollout_format"] == GSM8K_GRPO_ROLLOUT_FORMAT
+    assert rollouts.meta_info["logprob_provenance"] == {
+        "behavior": {
+            "source": "vllm.chat-completions.sampled-token-logprobs",
+            "policy_version": "sft64-final",
+            "model_revision": "model-revision",
+            "tokenizer_revision": "tokenizer-revision",
+            "policy_checkpoint_sha256": "b" * 64,
+        }
+    }
     assert "tasks" not in rollouts.non_tensor_batch
     assert rollouts.non_tensor_batch["task_ids"].tolist() == [task.task_id, task.task_id]
     assert rollouts.non_tensor_batch["termination_reasons"].tolist() == ["completed", "completed"]
@@ -284,6 +293,7 @@ def test_projects_multi_turn_vllm_tokens_to_existing_dataproto_and_separate_rewa
             ]
         ),
     )
+    torch.testing.assert_close(rollouts.batch["prompt_lengths"], torch.tensor([5, 5]))
 
     assert backend.requests[0]["model_kwargs"]["tool_choice"]["function"]["name"] == "calculate"
     assert "tool_choice" not in backend.requests[1]["model_kwargs"]

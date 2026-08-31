@@ -381,7 +381,9 @@ from this smoke configuration.
 ## Token-native synchronous GRPO readiness
 
 The synchronous GRPO reference consumes the existing `DataProto` fields
-`input_ids`, `attention_mask`, `loss_mask`, and `old_log_probs`. The GSM8K
+`input_ids`, `attention_mask`, `prompt_lengths`, `loss_mask`, and
+`old_log_probs`. The batch records behavior-log-prob provenance separately from
+trainer-old and reference-policy semantics. The GSM8K
 rollout adapter requests vLLM's provider-specific `return_token_ids` extension
 together with sampled-token log-probabilities. It requires every log-prob token
 label to use vLLM's `token_id:<id>` form. For vLLM 0.25.1 Chat Completions,

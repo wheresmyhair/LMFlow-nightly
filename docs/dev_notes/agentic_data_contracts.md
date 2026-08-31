@@ -30,6 +30,7 @@ The first training loop uses these `DataProto` fields:
 | --- | --- | --- |
 | `batch` | `input_ids` | Padded prompt, policy, and environment token ids. |
 | `batch` | `attention_mask` | Tokens visible to the model. |
+| `batch` | `prompt_lengths` | Optional per-row training boundary required by the sealed TRL GRPO backend. |
 | `batch` | `loss_mask` | Zero excludes a token from the objective; positive values select or weight it. |
 | `batch` | `rewards` | Sequence-level rollout rewards. |
 | `batch` | `advantages` | Sequence-level or token-level algorithm advantages. |
@@ -45,6 +46,9 @@ consume.
 Model, tokenizer, scaffold, and policy revisions can live in `meta_info` when
 they are constant for the whole batch, or in `non_tensor_batch` when they vary
 by row.
+Token-native rollout adapters also retain behavior-log-prob source and policy
+identity under `meta_info["logprob_provenance"]["behavior"]`; trainer-old and
+reference-policy meanings remain separate backend provenance.
 
 The controller-local `RolloutGroupAssembler` additionally requires a
 batch-constant `meta_info["policy_version"]`. Its group and rollout identities

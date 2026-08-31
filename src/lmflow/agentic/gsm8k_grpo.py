@@ -507,12 +507,14 @@ class GSM8KTokenNativeRollout:
         attention_mask = torch.zeros((len(rows), maximum_length), dtype=torch.long)
         loss_mask = torch.zeros((len(rows), maximum_length), dtype=torch.float32)
         old_log_probs = torch.zeros((len(rows), maximum_length), dtype=torch.float32)
+        prompt_lengths = torch.zeros(len(rows), dtype=torch.long)
         for index, sequence in enumerate(sequences):
             length = sequence.input_ids.shape[0]
             input_ids[index, :length] = sequence.input_ids
             attention_mask[index, :length] = sequence.attention_mask
             loss_mask[index, :length] = sequence.loss_mask
             old_log_probs[index, :length] = sequence.old_log_probs
+            prompt_lengths[index] = sequence.call_spans[0]["output_start"]
 
         return DataProto.from_dict(
             tensors={
@@ -520,6 +522,7 @@ class GSM8KTokenNativeRollout:
                 "attention_mask": attention_mask,
                 "loss_mask": loss_mask,
                 "old_log_probs": old_log_probs,
+                "prompt_lengths": prompt_lengths,
             },
             non_tensors={
                 "task_ids": np.asarray(task_ids).copy(),
@@ -562,6 +565,15 @@ class GSM8KTokenNativeRollout:
                     "base_seed": self.base_seed,
                     "max_tokens_per_call": self.max_tokens_per_call,
                     "provider_kwargs": copy.deepcopy(self.model_kwargs),
+                },
+                "logprob_provenance": {
+                    "behavior": {
+                        "source": "vllm.chat-completions.sampled-token-logprobs",
+                        "policy_version": policy_version,
+                        "model_revision": self.model_revision,
+                        "tokenizer_revision": self.tokenizer_revision,
+                        "policy_checkpoint_sha256": self.policy_checkpoint_sha256,
+                    }
                 },
             },
         )
