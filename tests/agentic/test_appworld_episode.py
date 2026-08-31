@@ -14,6 +14,15 @@ from lmflow.agentic.appworld_episode import (
     run_appworld_episode,
 )
 from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS, verify_manifest_digest
+from lmflow.agentic.appworld_token_native import (
+    AppWorldTokenNativeCompletionRecorder,
+    assemble_verified_appworld_token_sequence,
+    build_appworld_token_native_audit,
+    qwen3_appworld_prompt_token_ids,
+    qwen3_appworld_replay_chat_template,
+    qwen3_appworld_replay_chat_template_identity,
+)
+from lmflow.agentic.vllm_token_native import VLLMChatTokenData
 from lmflow.datasets.dataset import Dataset
 
 
@@ -161,6 +170,7 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
     assert messages[-1]["content"].endswith("\n\n")
     assert [message["role"] for message in backend.calls[0]] == ["user"]
     assert [message["role"] for message in backend.calls[1]] == ["user", "assistant", "user"]
+    assert backend.calls[1][1]["content"] == messages[1]["sampled_content"]
     assert "tool_calls" not in backend.calls[1][1]
     assert backend.calls[1][2]["content"] == messages[2]["content"]
     assert project_appworld_messages_for_react_scaffold(messages)[:3] == backend.calls[1]
@@ -175,7 +185,7 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
     )
     assert scaffold_messages[-1] == {
         "role": "assistant",
-        "content": messages[-1]["content"],
+        "content": messages[-1]["sampled_content"],
         "loss": True,
     }
     metadata = result.training_projection["instances"][0]["metadata"]
@@ -292,3 +302,318 @@ def test_scaffold_projection_rejects_unlinked_or_duplicate_observations():
 
     with pytest.raises(ValueError, match="duplicate observations"):
         project_appworld_messages_for_react_scaffold(messages + [messages[-1]])
+
+
+class FakeTokenNativeBackend:
+    def __init__(self):
+        self.calls = []
+        self.contents = [
+            "I will probe.\n```python\nfail()\n```",
+            "I will recover and finish.\n```python\ncomplete()\n```",
+        ]
+        self.prompts = [(1, 2), (1, 2, 3, 4, 5, 6)]
+        self.outputs = [(3, 4), (7,)]
+
+    def complete(self, *, messages, tools, model_name, model_kwargs):
+        call_index = len(self.calls)
+        self.calls.append({"messages": messages, "model_kwargs": model_kwargs})
+        request_id = model_kwargs["extra_body"]["request_id"]
+        output_token_ids = self.outputs[call_index]
+        return {
+            "message": {"role": "assistant", "content": self.contents[call_index]},
+            "finish_reason": "stop",
+            "raw_response": {
+                "id": f"chatcmpl-{request_id}",
+                "prompt_token_ids": list(self.prompts[call_index]),
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "token_ids": list(output_token_ids),
+                        "logprobs": {
+                            "content": [
+                                {"token": f"token_id:{token_id}", "logprob": -0.1 - index / 10}
+                                for index, token_id in enumerate(output_token_ids)
+                            ]
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": len(self.prompts[call_index]),
+                    "completion_tokens": len(output_token_ids),
+                    "total_tokens": len(self.prompts[call_index]) + len(output_token_ids),
+                },
+            },
+        }
+
+
+def test_token_native_appworld_fixture_preserves_policy_and_observation_tokens(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.load_reference_prompt",
+        lambda source: "USER:\nTask: {{ instruction }}",
+    )
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.scaffold_identity",
+        lambda source: {"id": "fake-reference", "prompt_sha256": "0" * 64},
+    )
+    monkeypatch.setattr("lmflow.agentic.appworld_episode.configure_appworld_freezegun", lambda: None)
+
+    backend = FakeTokenNativeBackend()
+    stages = []
+    step_stages = []
+
+    def render_prompt_token_ids(messages, model_kwargs):
+        assert model_kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+        return backend.prompts[0 if len(messages) == 1 else 1]
+
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="fixture-policy-task-rollout-0",
+        prompt_token_ids_renderer=render_prompt_token_ids,
+        evidence_sink=lambda stage, call_index, evidence: stages.append((stage, call_index, evidence)),
+    )
+    result = run_appworld_episode(
+        recorder,
+        task_id=APPWORLD_TINY_TASK_IDS[0],
+        model_name="Qwen/Qwen3-4B",
+        model_revision="revision",
+        trajectory_id="token-native:task",
+        appworld_root=tmp_path,
+        appworld_source=tmp_path,
+        experiment_name="token-native-fixture",
+        world_factory=lambda **kwargs: FakeWorld(tmp_path),
+        step_evidence_sink=lambda stage, step_number, evidence: step_stages.append((stage, step_number, evidence)),
+    )
+
+    assert result.artifact["metrics"]["model_calls"] == 2
+    assert [message["role"] for message in backend.calls[1]["messages"]] == ["user", "assistant", "user"]
+    assert backend.calls[0]["model_kwargs"]["logprobs"] is True
+    assert backend.calls[0]["model_kwargs"]["extra_body"]["return_token_ids"] is True
+    assert [stage for stage, _, _ in stages] == [
+        "request_intent",
+        "raw_response",
+        "normalized_response",
+        "token_evidence",
+        "request_termination",
+    ] * 2
+    first_request_intent = stages[0][2]
+    assert first_request_intent["messages"] == backend.calls[0]["messages"]
+    assert first_request_intent["model_kwargs"] == backend.calls[0]["model_kwargs"]
+    assert [stage for stage, _, _ in step_stages] == [
+        "action_intent",
+        "raw_execution",
+        "normalized_transition",
+        "step_termination",
+        "action_intent",
+        "raw_execution",
+        "normalized_transition",
+        "step_termination",
+    ]
+    assert step_stages[0][2]["state_before_sha256"] == step_stages[2][2]["state_before_sha256"]
+    assert step_stages[1][2]["output"] == step_stages[2][2]["output"]
+
+    audit = recorder.build_audit(policy_version="qwen3-4b-starting@revision")
+    verify_manifest_digest(audit)
+    assert audit["canonical_prompts_match"] is True
+    assert audit["sampled_anchors_match"] is True
+    assert audit["single_flattened_rollout_ready"] is True
+    assert audit["transitions"][0]["environment_token_ids"] == [5, 6]
+    assert audit["flattened_sequence"]["input_ids"] == [1, 2, 3, 4, 5, 6, 7]
+    assert audit["flattened_sequence"]["policy_origin_mask"] == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+    assert audit["retokenized_sampled_tokens_used"] is False
+
+
+def test_token_native_audit_preserves_drift_evidence_and_strict_assembly_fails():
+    calls = [
+        VLLMChatTokenData("first", "chatcmpl-first", (1, 2), (3, 4), (-0.1, -0.2), "stop"),
+        VLLMChatTokenData("second", "chatcmpl-second", (1, 2, 3, 99, 5), (6,), (-0.3,), "stop"),
+    ]
+    expected_prompts = [calls[0].prompt_token_ids, calls[1].prompt_token_ids]
+
+    audit = build_appworld_token_native_audit(
+        calls,
+        expected_prompt_token_ids=expected_prompts,
+        policy_version="policy-v1",
+    )
+
+    assert audit["canonical_prompts_match"] is True
+    assert audit["sampled_anchors_match"] is False
+    assert audit["single_flattened_rollout_ready"] is False
+    assert audit["flattened_sequence"] is None
+    assert audit["transitions"][0]["sampled_anchor_first_difference"] == {
+        "position": 3,
+        "expected_token_id": 4,
+        "actual_token_id": 99,
+        "kind": "token_mismatch",
+    }
+    with pytest.raises(ValueError, match="sampled-token anchor mismatch"):
+        assemble_verified_appworld_token_sequence(
+            calls,
+            expected_prompt_token_ids=expected_prompts,
+            policy_version="policy-v1",
+        )
+
+
+def test_qwen3_prompt_renderer_preserves_messages_and_thinking_identity():
+    class FakeTokenizer:
+        def __init__(self):
+            self.arguments = None
+            self.chat_template = (
+                "{% if message.role == 'user' and "
+                "not(message.content.startswith('<tool_response>') "
+                "and message.content.endswith('</tool_response>')) %}kept{% endif %}"
+            )
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.arguments = {"messages": messages, **kwargs}
+            return {"input_ids": [[1, 2, 3]]}
+
+    tokenizer = FakeTokenizer()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "reasoning_content": "think", "content": "action"},
+        {"role": "user", "content": "Output:\nresult"},
+    ]
+
+    actual = qwen3_appworld_prompt_token_ids(
+        tokenizer,
+        messages,
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    )
+
+    assert actual == (1, 2, 3)
+    assert tokenizer.arguments == {
+        "messages": messages,
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "enable_thinking": False,
+        "chat_template": qwen3_appworld_replay_chat_template(tokenizer),
+    }
+    assert "not(message.content.startswith('Output:\\n'))" in tokenizer.arguments["chat_template"]
+
+
+def test_qwen3_replay_template_identity_is_fail_closed_and_stable():
+    condition = (
+        "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
+    )
+    tokenizer = SimpleNamespace(chat_template=f"prefix {condition} suffix")
+
+    replay_template = qwen3_appworld_replay_chat_template(tokenizer)
+    identity = qwen3_appworld_replay_chat_template_identity(tokenizer)
+
+    assert replay_template == f"prefix {condition} and not(message.content.startswith('Output:\\n')) suffix"
+    assert identity == {
+        "policy_id": "lmflow.appworld-qwen3-reasoning-replay/v1",
+        "source_chat_template_sha256": "6fb78078b691e35c53f496f29ef66ef335648f9f2337a3d4786c1b9199804b9d",
+        "replay_chat_template_sha256": "c88fbc555771d89ee547e956f371a8cad6cb8292fec685dae1ca37c8ccee4ec7",
+    }
+
+    with pytest.raises(ValueError, match="last-query boundary is unsupported"):
+        qwen3_appworld_replay_chat_template(SimpleNamespace(chat_template="unrecognized"))
+    with pytest.raises(ValueError, match="non-empty chat template"):
+        qwen3_appworld_replay_chat_template(SimpleNamespace(chat_template=None))
+
+
+def test_qwen3_replay_policy_preserves_length_stopped_reasoning_before_output_observation():
+    condition = (
+        "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
+    )
+
+    class MinimalQwen3Tokenizer:
+        def __init__(self):
+            self.chat_template = f"prefix {condition} suffix"
+
+        def apply_chat_template(self, messages, *, chat_template, add_generation_prompt, **kwargs):
+            preserve_output_reasoning = "not(message.content.startswith('Output:\\n'))" in chat_template
+            last_query_index = len(messages) - 1
+            for index in range(len(messages) - 1, -1, -1):
+                message = messages[index]
+                if message["role"] != "user":
+                    continue
+                if preserve_output_reasoning and message["content"].startswith("Output:\n"):
+                    continue
+                last_query_index = index
+                break
+
+            rendered = ""
+            for index, message in enumerate(messages):
+                if message["role"] == "user":
+                    rendered += f"<u>{message['content']}</u>"
+                elif message["role"] == "assistant":
+                    reasoning = message.get("reasoning_content", "")
+                    content = message.get("content", "")
+                    if index > last_query_index and reasoning:
+                        rendered += f"<a><think>\n{reasoning.strip()}\n</think>\n\n{content.lstrip()}</a>"
+                    else:
+                        rendered += f"<a>{content}</a>"
+            if add_generation_prompt:
+                rendered += "<a>"
+            return list(rendered.encode("utf-8"))
+
+    tokenizer = MinimalQwen3Tokenizer()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "reasoning_content": "unfinished reasoning", "content": ""},
+        {"role": "user", "content": "Output:\n```\nNo code available to execute.\n```\n\n"},
+    ]
+    model_kwargs = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+    first_prompt = qwen3_appworld_prompt_token_ids(tokenizer, messages[:1], model_kwargs)
+    sampled_length_stopped_output = tuple(b"<think>\nunfinished reasoning")
+    replay_prompt = qwen3_appworld_prompt_token_ids(tokenizer, messages, model_kwargs)
+    stock_prompt = tuple(
+        tokenizer.apply_chat_template(
+            messages,
+            chat_template=tokenizer.chat_template,
+            add_generation_prompt=True,
+            tokenize=True,
+            enable_thinking=True,
+        )
+    )
+    expected_sampled_prefix = first_prompt + sampled_length_stopped_output
+
+    assert replay_prompt[: len(expected_sampled_prefix)] == expected_sampled_prefix
+    assert stock_prompt[: len(expected_sampled_prefix)] != expected_sampled_prefix
+    deterministic_suffix = tuple(b"\n</think>")
+    assert replay_prompt[len(expected_sampled_prefix) :][: len(deterministic_suffix)] == deterministic_suffix
+
+    stop_content = "```python\ncomplete()\n```"
+    third_messages = messages + [
+        {
+            "role": "assistant",
+            "reasoning_content": "second reasoning",
+            "content": stop_content,
+        },
+        {"role": "user", "content": "Output:\n```\nExecution successful.\n```\n\n"},
+    ]
+    sampled_stop_output = tuple(f"<think>\nsecond reasoning\n</think>\n\n{stop_content}</a>".encode())
+    third_prompt = qwen3_appworld_prompt_token_ids(tokenizer, third_messages, model_kwargs)
+    expected_stop_prefix = replay_prompt + sampled_stop_output
+
+    assert third_prompt[: len(expected_stop_prefix)] == expected_stop_prefix
+
+
+def test_token_native_recorder_emits_raw_evidence_before_token_assertion():
+    class InvalidTokenBackend(FakeTokenNativeBackend):
+        def complete(self, **kwargs):
+            response = super().complete(**kwargs)
+            response["raw_response"]["choices"][0]["logprobs"]["content"][0]["token"] = "decoded-text"
+            return response
+
+    backend = InvalidTokenBackend()
+    stages = []
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="invalid-token-evidence",
+        prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        evidence_sink=lambda stage, call_index, evidence: stages.append(stage),
+    )
+
+    with pytest.raises(ValueError, match="cannot prove sampled-token identity"):
+        recorder.complete(
+            messages=[{"role": "user", "content": "task"}],
+            tools=[],
+            model_name="model",
+            model_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+        )
+
+    assert stages == ["request_intent", "raw_response", "normalized_response", "token_evidence_error"]
+    assert recorder.calls == ()

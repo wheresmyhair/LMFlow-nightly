@@ -236,7 +236,13 @@ def project_appworld_messages_for_react_scaffold(
             projected_messages.append({"role": role, "content": content})
             continue
         if role == "assistant":
-            projected = {"role": "assistant", "content": content}
+            sampled_content = raw_message.get("sampled_content", content)
+            if not isinstance(sampled_content, str):
+                raise TypeError(f"AppWorld assistant message {index} sampled_content must be text")
+            projected = {
+                "role": "assistant",
+                "content": sampled_content,
+            }
             if preserve_loss and "loss" in raw_message:
                 loss = raw_message.get("loss")
                 if loss is not None and not isinstance(loss, bool):
@@ -366,6 +372,11 @@ def appworld_artifact_to_semantic_conversation(artifact: Mapping[str, Any]) -> d
             "loss": loss,
             "tool_calls": [_parsed_python_tool_call(call_id, code)],
         }
+        sampled_content = model_step.get("sampled_content")
+        if sampled_content is not None:
+            if not isinstance(sampled_content, str):
+                raise TypeError(f"AppWorld model step {index} sampled_content must be text")
+            assistant_message["sampled_content"] = sampled_content
         reasoning_content = model_step.get("reasoning_content")
         if reasoning_content is not None:
             if not isinstance(reasoning_content, str):
@@ -505,6 +516,7 @@ def run_appworld_episode(
     max_steps: int = 50,
     source_split: str = APPWORLD_SOURCE_SPLIT,
     world_factory: Callable[..., Any] | None = None,
+    step_evidence_sink: Callable[[str, int, Mapping[str, Any]], None] | None = None,
 ) -> AppWorldEpisodeResult:
     """Run one local AppWorld task and evaluate it with AppWorld's verifier."""
 
@@ -525,6 +537,8 @@ def run_appworld_episode(
         model_kwargs = qwen3_reference_model_kwargs()
     if not isinstance(model_kwargs, Mapping):
         raise TypeError("model_kwargs must be a mapping")
+    if step_evidence_sink is not None and not callable(step_evidence_sink):
+        raise TypeError("step_evidence_sink must be callable")
 
     root = Path(appworld_root).expanduser().resolve()
     if not root.is_dir():
@@ -591,7 +605,11 @@ def run_appworld_episode(
                 break
             model_latency_seconds = _monotonic_clock() - model_started_at
             code, fixed_content = extract_first_python_code(completion["content"])
-            assistant_message: dict[str, Any] = {"role": "assistant", "content": fixed_content + "\n\n"}
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": fixed_content + "\n\n",
+                "sampled_content": completion["content"],
+            }
             if completion["reasoning_content"] is not None:
                 assistant_message["reasoning_content"] = completion["reasoning_content"]
             last_action_call_id = f"{trajectory_id}:action-{step_number:03d}"
@@ -605,6 +623,7 @@ def run_appworld_episode(
                 {
                     "step_number": step_number,
                     "content": fixed_content,
+                    "sampled_content": completion["content"],
                     "reasoning_content": completion["reasoning_content"],
                     "finish_reason": completion["finish_reason"],
                     "usage": usage,
@@ -615,15 +634,58 @@ def run_appworld_episode(
 
             api_calls_before = _request_log(world)
             state_before_sha256 = _directory_digest(Path(world.output_db_home_path_on_disk))
+            if step_evidence_sink is not None:
+                step_evidence_sink(
+                    "action_intent",
+                    step_number,
+                    _json_copy(
+                        {
+                            "step_number": step_number,
+                            "action_call_id": last_action_call_id,
+                            "code": code,
+                            "state_before_sha256": state_before_sha256,
+                            "api_call_count_before": len(api_calls_before),
+                        },
+                        name="AppWorld action intent evidence",
+                    ),
+                )
             execution_started_at = _monotonic_clock()
             try:
                 execution_output = world.execute(code)
             except Exception as error:
+                if step_evidence_sink is not None:
+                    step_evidence_sink(
+                        "execution_error",
+                        step_number,
+                        {
+                            "step_number": step_number,
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        },
+                    )
+                    step_evidence_sink(
+                        "step_termination",
+                        step_number,
+                        {
+                            "step_number": step_number,
+                            "status": "environment_error",
+                        },
+                    )
                 training_message["loss"] = False
                 runner_error = {"type": type(error).__name__, "message": str(error)}
                 termination_reason = "environment_error"
                 break
             execution_latency_seconds = _monotonic_clock() - execution_started_at
+            if step_evidence_sink is not None:
+                step_evidence_sink(
+                    "raw_execution",
+                    step_number,
+                    {
+                        "step_number": step_number,
+                        "output": execution_output,
+                        "latency_seconds": execution_latency_seconds,
+                    },
+                )
             api_calls_after = _request_log(world)
             api_calls = api_calls_after[len(api_calls_before) :]
             state_after_sha256 = _directory_digest(Path(world.output_db_home_path_on_disk))
@@ -633,21 +695,36 @@ def run_appworld_episode(
             if recovered:
                 recovery_count += 1
             pending_failed_action = not valid_action
-            action_steps.append(
-                {
-                    "step_number": step_number,
-                    "code": code,
-                    "output": execution_output,
-                    "valid": valid_action,
-                    "api_call_count": len(api_calls),
-                    "api_calls_redacted": _redact(api_calls),
-                    "state_before_sha256": state_before_sha256,
-                    "state_after_sha256": state_after_sha256,
-                    "state_changed": state_before_sha256 != state_after_sha256,
-                    "recovered_prior_failure": recovered,
-                    "latency_seconds": execution_latency_seconds,
-                }
-            )
+            action_step = {
+                "step_number": step_number,
+                "code": code,
+                "output": execution_output,
+                "valid": valid_action,
+                "api_call_count": len(api_calls),
+                "api_calls_redacted": _redact(api_calls),
+                "state_before_sha256": state_before_sha256,
+                "state_after_sha256": state_after_sha256,
+                "state_changed": state_before_sha256 != state_after_sha256,
+                "recovered_prior_failure": recovered,
+                "latency_seconds": execution_latency_seconds,
+            }
+            action_steps.append(action_step)
+            if step_evidence_sink is not None:
+                step_evidence_sink(
+                    "normalized_transition",
+                    step_number,
+                    _json_copy(action_step, name="AppWorld normalized transition evidence"),
+                )
+                step_evidence_sink(
+                    "step_termination",
+                    step_number,
+                    {
+                        "step_number": step_number,
+                        "status": "sealed",
+                        "valid": valid_action,
+                        "state_changed": state_before_sha256 != state_after_sha256,
+                    },
+                )
             last_execution_output = execution_output
             task_completed_signal = bool(world.task_completed())
             if task_completed_signal:
