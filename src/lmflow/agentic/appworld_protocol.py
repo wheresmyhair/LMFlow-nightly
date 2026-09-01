@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from lmflow.agentic.data_construction import canonical_json_sha256, verify_manifest_digest, with_manifest_digest
 from lmflow.datasets import Dataset
 
 APPWORLD_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-tiny-protocol/v1"
 APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-data-pilot-protocol/v1"
+APPWORLD_SCENARIO_CURRICULUM_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-scenario-curriculum-protocol/v1"
 APPWORLD_REPOSITORY = "https://github.com/StonyBrookNLP/appworld.git"
 APPWORLD_REVISION = "a072b7a86e7c1d5b1d7175659d750ebb9b79f10a"
 APPWORLD_CODE_VERSION = "0.2.0.dev0"
@@ -68,43 +69,20 @@ APPWORLD_DATA_PILOT_TASK_IDS = tuple(
 )
 APPWORLD_DATA_PILOT_TASK_SET_SHA256 = "d8a89fb3037ce6fe078d72517b80146c1c2cd1f6c007cad79beaa06aa3252327"
 
-
-def canonical_json_sha256(value: Any) -> str:
-    """Hash a JSON value using a stable protocol encoding."""
-
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def with_manifest_digest(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON copy with a digest over every existing field."""
-
-    if not isinstance(payload, Mapping):
-        raise TypeError("manifest payload must be a mapping")
-    if "manifest_sha256" in payload:
-        raise ValueError("manifest payload must not already contain manifest_sha256")
-    copied = json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False))
-    copied["manifest_sha256"] = canonical_json_sha256(copied)
-    return copied
-
-
-def verify_manifest_digest(manifest: Mapping[str, Any]) -> None:
-    """Validate a manifest produced by :func:`with_manifest_digest`."""
-
-    if not isinstance(manifest, Mapping):
-        raise TypeError("manifest must be a mapping")
-    expected = manifest.get("manifest_sha256")
-    if not isinstance(expected, str) or len(expected) != 64:
-        raise ValueError("manifest must contain a SHA-256 manifest_sha256")
-    payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    if canonical_json_sha256(payload) != expected:
-        raise ValueError("manifest_sha256 does not match the manifest content")
+# The next two complete train scenarios in official order for difficulties 1
+# and 2 form the first scenario-diverse curriculum candidate. Difficulty 3 is
+# deliberately absent from this slice; the initial teacher pilot produced no
+# verified success there, so it requires a separate data decision.
+APPWORLD_SCENARIO_CURRICULUM_SCENARIOS = {
+    "287e338": {"difficulty": 1, "official_scenario_index": 1},
+    "27e1026": {"difficulty": 1, "official_scenario_index": 2},
+    "2a163ab": {"difficulty": 2, "official_scenario_index": 1},
+    "29caf6f": {"difficulty": 2, "official_scenario_index": 2},
+}
+APPWORLD_SCENARIO_CURRICULUM_TASK_IDS = tuple(
+    f"{scenario_id}_{variant}" for scenario_id in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS for variant in (1, 2, 3)
+)
+APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256 = "969c03630fe2f4f66d5a67aca5c7b91cda76c1146ee33c221699bc892a370da5"
 
 
 def _sha256_file(path: Path) -> str:
@@ -196,10 +174,24 @@ def _validate_official_splits(root: Path, load_task_ids: Any) -> dict[str, tuple
                 raise ValueError(f"AppWorld scenarios overlap between {left!r} and {right!r}: {sorted(overlap)}")
     if not set(APPWORLD_DATA_PILOT_TASK_IDS).issubset(split_task_ids["train"]):
         raise ValueError("AppWorld data-pilot tasks are absent from train")
+    if not set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS).issubset(split_task_ids["train"]):
+        raise ValueError("AppWorld scenario-curriculum tasks are absent from train")
+    if set(APPWORLD_DATA_PILOT_TASK_IDS) & set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS):
+        raise RuntimeError("AppWorld data-pilot and scenario-curriculum task sets overlap")
     for difficulty, scenario_id in enumerate(APPWORLD_DATA_PILOT_SCENARIOS, start=1):
         difficulty_ids = tuple(load_task_ids("train", difficulty=difficulty, num_tasks_per_scenario=3))
         if not difficulty_ids or _scenario_id(difficulty_ids[0]) != scenario_id:
             raise ValueError(f"AppWorld data-pilot difficulty-{difficulty} selection rule changed")
+    for difficulty in (1, 2):
+        difficulty_ids = tuple(load_task_ids("train", difficulty=difficulty, num_tasks_per_scenario=3))
+        ordered_scenarios = tuple(dict.fromkeys(_scenario_id(task_id) for task_id in difficulty_ids))
+        selected_scenarios = tuple(
+            scenario_id
+            for scenario_id, metadata in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS.items()
+            if metadata["difficulty"] == difficulty
+        )
+        if selected_scenarios != ordered_scenarios[1:3]:
+            raise ValueError(f"AppWorld scenario-curriculum difficulty-{difficulty} selection rule changed")
     return split_task_ids
 
 
@@ -212,11 +204,14 @@ def canonical_appworld_instance_id(task_id: str) -> str:
 
 
 def canonical_appworld_sliced_instance_id(task_id: str, *, source_split: str) -> str:
-    """Build an identity for one of the two frozen AppWorld development slices."""
+    """Build an identity for a pinned AppWorld development slice."""
 
     if source_split == APPWORLD_SOURCE_SPLIT:
         return canonical_appworld_instance_id(task_id)
-    if source_split == "train" and task_id in APPWORLD_DATA_PILOT_TASK_IDS:
+    if source_split == "train" and task_id in {
+        *APPWORLD_DATA_PILOT_TASK_IDS,
+        *APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
+    }:
         return f"{APPWORLD_REPOSITORY}@{APPWORLD_REVISION}/data-{APPWORLD_DATA_VERSION}/train/{task_id}"
     raise ValueError(f"task {task_id!r} is outside the pinned AppWorld {source_split!r} slice")
 
@@ -322,26 +317,29 @@ def load_pinned_appworld_tiny_dataset(
     return dataset, manifest
 
 
-def load_pinned_appworld_data_pilot_dataset(
+def _load_pinned_appworld_train_slice_dataset(
     *,
-    appworld_root: str | os.PathLike[str],
+    root: Path,
+    task_type: Any,
+    split_task_ids: Mapping[str, tuple[str, ...]],
+    format_version: str,
+    task_set_key: str,
+    task_ids: Sequence[str],
+    task_set_sha256: str,
+    scenarios: Mapping[str, Mapping[str, Any]],
+    selection_rule: str,
 ) -> tuple[Dataset, dict[str, Any]]:
-    """Load the frozen train pilot without loading ground truth into the Dataset."""
-
-    root = _configure_root(appworld_root)
-    _, Task, load_task_ids = _require_appworld()
-    split_task_ids = _validate_official_splits(root, load_task_ids)
-    if canonical_json_sha256(list(APPWORLD_DATA_PILOT_TASK_IDS)) != APPWORLD_DATA_PILOT_TASK_SET_SHA256:
-        raise RuntimeError("AppWorld data-pilot task-set constant does not match its pinned digest")
+    if canonical_json_sha256(list(task_ids)) != task_set_sha256:
+        raise RuntimeError(f"AppWorld {task_set_key} constant does not match its pinned digest")
 
     instances = []
     instance_manifest = []
-    for task_id in APPWORLD_DATA_PILOT_TASK_IDS:
+    for task_id in task_ids:
         scenario_id = _scenario_id(task_id)
-        difficulty = APPWORLD_DATA_PILOT_SCENARIOS[scenario_id]["difficulty"]
+        difficulty = scenarios[scenario_id]["difficulty"]
         spec_path = root / "data" / "tasks" / task_id / "specs.json"
         task_spec_sha256 = _sha256_file(spec_path)
-        task = Task.load(task_id=task_id, load_ground_truth=False)
+        task = task_type.load(task_id=task_id, load_ground_truth=False)
         try:
             instance_id = canonical_appworld_sliced_instance_id(task_id, source_split="train")
             instance = {
@@ -367,7 +365,7 @@ def load_pinned_appworld_data_pilot_dataset(
         for split, task_ids in split_task_ids.items()
     }
     protocol_identity = {
-        "format_version": APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION,
+        "format_version": format_version,
         "source": {
             "repository": APPWORLD_REPOSITORY,
             "revision": APPWORLD_REVISION,
@@ -377,13 +375,13 @@ def load_pinned_appworld_data_pilot_dataset(
         },
         "official_splits": split_identity,
         "scenario_disjoint": True,
-        "pilot_task_set": {
-            "task_ids": list(APPWORLD_DATA_PILOT_TASK_IDS),
-            "task_ids_sha256": APPWORLD_DATA_PILOT_TASK_SET_SHA256,
-            "selection_rule": "first complete train scenario in official order at each difficulty",
+        task_set_key: {
+            "task_ids": list(task_ids),
+            "task_ids_sha256": task_set_sha256,
+            "selection_rule": selection_rule,
             "tasks_per_scenario": 3,
-            "scenario_count": 3,
-            "scenarios": APPWORLD_DATA_PILOT_SCENARIOS,
+            "scenario_count": len(scenarios),
+            "scenarios": scenarios,
         },
         "gold_visibility": "ground_truth_not_loaded_for_dataset_projection",
     }
@@ -399,6 +397,53 @@ def load_pinned_appworld_data_pilot_dataset(
     return dataset, manifest
 
 
+def load_pinned_appworld_data_pilot_dataset(
+    *,
+    appworld_root: str | os.PathLike[str],
+) -> tuple[Dataset, dict[str, Any]]:
+    """Load the frozen train pilot without loading ground truth into the Dataset."""
+
+    root = _configure_root(appworld_root)
+    _, Task, load_task_ids = _require_appworld()
+    split_task_ids = _validate_official_splits(root, load_task_ids)
+    return _load_pinned_appworld_train_slice_dataset(
+        root=root,
+        task_type=Task,
+        split_task_ids=split_task_ids,
+        format_version=APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION,
+        task_set_key="pilot_task_set",
+        task_ids=APPWORLD_DATA_PILOT_TASK_IDS,
+        task_set_sha256=APPWORLD_DATA_PILOT_TASK_SET_SHA256,
+        scenarios=APPWORLD_DATA_PILOT_SCENARIOS,
+        selection_rule="first complete train scenario in official order at each difficulty",
+    )
+
+
+def load_pinned_appworld_scenario_curriculum_dataset(
+    *,
+    appworld_root: str | os.PathLike[str],
+) -> tuple[Dataset, dict[str, Any]]:
+    """Load the first scenario-diverse d1/d2 train curriculum candidate."""
+
+    root = _configure_root(appworld_root)
+    _, Task, load_task_ids = _require_appworld()
+    split_task_ids = _validate_official_splits(root, load_task_ids)
+    return _load_pinned_appworld_train_slice_dataset(
+        root=root,
+        task_type=Task,
+        split_task_ids=split_task_ids,
+        format_version=APPWORLD_SCENARIO_CURRICULUM_PROTOCOL_FORMAT_VERSION,
+        task_set_key="scenario_curriculum_task_set",
+        task_ids=APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
+        task_set_sha256=APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256,
+        scenarios=APPWORLD_SCENARIO_CURRICULUM_SCENARIOS,
+        selection_rule=(
+            "next two complete train scenarios in official order after the initial pilot "
+            "for each of difficulties 1 and 2"
+        ),
+    )
+
+
 __all__ = [
     "APPWORLD_CODE_VERSION",
     "APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION",
@@ -409,6 +454,10 @@ __all__ = [
     "APPWORLD_PROTOCOL_FORMAT_VERSION",
     "APPWORLD_REPOSITORY",
     "APPWORLD_REVISION",
+    "APPWORLD_SCENARIO_CURRICULUM_PROTOCOL_FORMAT_VERSION",
+    "APPWORLD_SCENARIO_CURRICULUM_SCENARIOS",
+    "APPWORLD_SCENARIO_CURRICULUM_TASK_IDS",
+    "APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256",
     "APPWORLD_SOURCE_SPLIT",
     "APPWORLD_TINY_SCENARIOS",
     "APPWORLD_TINY_TASK_IDS",
@@ -416,6 +465,7 @@ __all__ = [
     "canonical_appworld_sliced_instance_id",
     "canonical_json_sha256",
     "load_pinned_appworld_data_pilot_dataset",
+    "load_pinned_appworld_scenario_curriculum_dataset",
     "load_pinned_appworld_tiny_dataset",
     "verify_manifest_digest",
     "with_manifest_digest",
