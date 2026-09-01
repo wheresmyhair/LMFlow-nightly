@@ -16,6 +16,7 @@ APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-data-pilot-protoc
 APPWORLD_SCENARIO_CURRICULUM_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-scenario-curriculum-protocol/v1"
 APPWORLD_TRAIN_D1_D2_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-train-d1-d2-protocol/v1"
 APPWORLD_TRAIN_D1_D2_EXPANSION_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-train-d1-d2-expansion-protocol/v1"
+APPWORLD_CONTEXT_BUDGET_EXHAUSTED = "context_budget_exhausted"
 APPWORLD_REPOSITORY = "https://github.com/StonyBrookNLP/appworld.git"
 APPWORLD_REVISION = "a072b7a86e7c1d5b1d7175659d750ebb9b79f10a"
 APPWORLD_CODE_VERSION = "0.2.0.dev0"
@@ -46,6 +47,11 @@ APPWORLD_OFFICIAL_SPLITS = {
         "task_list_sha256": "3c32b481042ac97f7d3477d53f5d196245c885c438d652944edc8a9a28e0f028",
     },
 }
+
+
+class AppWorldContextBudgetExhaustedError(ValueError):
+    """The exact AppWorld prompt leaves no model-visible completion budget."""
+
 
 # Three complete scenario groups make AppWorld's scenario-goal-completion
 # metric meaningful while covering one group at each official difficulty.
@@ -559,6 +565,7 @@ def load_pinned_appworld_train_d1_d2_expansion_dataset(
 
 __all__ = [
     "APPWORLD_CODE_VERSION",
+    "APPWORLD_CONTEXT_BUDGET_EXHAUSTED",
     "APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION",
     "APPWORLD_DATA_PILOT_SCENARIOS",
     "APPWORLD_DATA_PILOT_TASK_IDS",
@@ -582,6 +589,7 @@ __all__ = [
     "APPWORLD_TRAIN_D1_D2_SCENARIOS",
     "APPWORLD_TRAIN_D1_D2_TASK_IDS",
     "APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256",
+    "AppWorldContextBudgetExhaustedError",
     "canonical_appworld_instance_id",
     "canonical_appworld_sliced_instance_id",
     "canonical_json_sha256",

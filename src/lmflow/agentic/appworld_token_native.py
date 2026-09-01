@@ -8,7 +8,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from lmflow.agentic.appworld_protocol import canonical_json_sha256, with_manifest_digest
+from lmflow.agentic.appworld_protocol import (
+    AppWorldContextBudgetExhaustedError,
+    canonical_json_sha256,
+    with_manifest_digest,
+)
 from lmflow.agentic.completion import CompletionBackend, normalize_completion_response
 from lmflow.agentic.vllm_token_native import (
     AssembledTokenSequence,
@@ -433,12 +437,13 @@ class AppWorldTokenNativeCompletionRecorder:
                 f"AppWorld prompt uses {len(expected_prompt)} tokens and leaves no completion "
                 f"budget within max_model_len={self._max_model_len}"
             )
+            error = AppWorldContextBudgetExhaustedError(message)
             self._emit(
                 "context_budget_error",
                 call_index,
                 {
                     "request_id": request_id,
-                    "type": "ValueError",
+                    "type": type(error).__name__,
                     "message": message,
                     "status": "rejected_before_request",
                     "context_budget": context_budget,
@@ -455,7 +460,7 @@ class AppWorldTokenNativeCompletionRecorder:
                     "context_budget": context_budget,
                 },
             )
-            raise ValueError(message)
+            raise error
         try:
             response = self._backend.complete(
                 messages=messages,
