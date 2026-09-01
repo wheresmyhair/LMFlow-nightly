@@ -456,14 +456,73 @@ class AppWorldTokenNativeCompletionRecorder:
                 },
             )
             raise ValueError(message)
-        response = self._backend.complete(
-            messages=messages,
-            tools=tools,
-            model_name=model_name,
-            model_kwargs=request_kwargs,
-        )
+        try:
+            response = self._backend.complete(
+                messages=messages,
+                tools=tools,
+                model_name=model_name,
+                model_kwargs=request_kwargs,
+            )
+        except Exception as error:
+            status_code = getattr(error, "status_code", None)
+            if isinstance(status_code, bool) or not isinstance(status_code, int):
+                status_code = None
+            provider_request_id = getattr(error, "request_id", None)
+            if not isinstance(provider_request_id, str) or not provider_request_id:
+                provider_request_id = None
+            self._emit(
+                "backend_error",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "provider_request_id": provider_request_id,
+                    "type": type(error).__name__,
+                    "message": str(error),
+                    "status": "backend_error",
+                    "status_code": status_code,
+                },
+            )
+            self._emit(
+                "request_termination",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "response_id": None,
+                    "finish_reason": "backend_error",
+                    "status": "backend_error",
+                    "error_type": type(error).__name__,
+                    "status_code": status_code,
+                    "context_budget": context_budget,
+                },
+            )
+            raise
         self._emit("raw_response", call_index, response)
-        completion = normalize_completion_response(response)
+        try:
+            completion = normalize_completion_response(response)
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            self._emit(
+                "normalized_response_error",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "type": type(error).__name__,
+                    "message": str(error),
+                    "status": "invalid_normalized_response",
+                },
+            )
+            self._emit(
+                "request_termination",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "response_id": None,
+                    "finish_reason": "invalid_normalized_response",
+                    "status": "invalid_normalized_response",
+                    "error_type": type(error).__name__,
+                    "context_budget": context_budget,
+                },
+            )
+            raise
         self._emit(
             "normalized_response",
             call_index,
@@ -486,6 +545,18 @@ class AppWorldTokenNativeCompletionRecorder:
                     "type": type(error).__name__,
                     "message": str(error),
                     "status": "invalid_token_identity",
+                },
+            )
+            self._emit(
+                "request_termination",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "response_id": completion.get("raw_response", {}).get("id"),
+                    "finish_reason": completion.get("finish_reason"),
+                    "status": "invalid_token_identity",
+                    "error_type": type(error).__name__,
+                    "context_budget": context_budget,
                 },
             )
             raise
