@@ -639,7 +639,102 @@ def test_token_native_recorder_emits_raw_evidence_before_token_assertion():
             },
         )
 
-    assert stages == ["request_intent", "raw_response", "normalized_response", "token_evidence_error"]
+    assert stages == [
+        "request_intent",
+        "raw_response",
+        "normalized_response",
+        "token_evidence_error",
+        "request_termination",
+    ]
+    assert recorder.calls == ()
+
+
+def test_token_native_recorder_seals_backend_error_before_reraising():
+    class BackendHTTPError(RuntimeError):
+        status_code = 400
+        request_id = "provider-request-id"
+
+    class FailingBackend(FakeTokenNativeBackend):
+        def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            raise BackendHTTPError("non-finite log-prob response")
+
+    backend = FailingBackend()
+    backend.prompts[0] = (1, 2, 3)
+    stages = []
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="backend-error-evidence",
+        prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        max_model_len=32768,
+        evidence_sink=lambda stage, call_index, evidence: stages.append((stage, evidence)),
+    )
+
+    with pytest.raises(BackendHTTPError, match="non-finite log-prob response"):
+        recorder.complete(
+            messages=[{"role": "user", "content": "task"}],
+            tools=[],
+            model_name="model",
+            model_kwargs={
+                "max_completion_tokens": 16,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        )
+
+    assert [stage for stage, _ in stages] == [
+        "request_intent",
+        "backend_error",
+        "request_termination",
+    ]
+    assert stages[1][1] == {
+        "request_id": "backend-error-evidence-call-000",
+        "provider_request_id": "provider-request-id",
+        "type": "BackendHTTPError",
+        "message": "non-finite log-prob response",
+        "status": "backend_error",
+        "status_code": 400,
+    }
+    assert stages[2][1]["status"] == "backend_error"
+    assert stages[2][1]["finish_reason"] == "backend_error"
+    assert recorder.calls == ()
+
+
+def test_token_native_recorder_seals_normalization_error_after_raw_response():
+    class InvalidMessageBackend(FakeTokenNativeBackend):
+        def complete(self, **kwargs):
+            response = super().complete(**kwargs)
+            response["message"]["role"] = "user"
+            return response
+
+    backend = InvalidMessageBackend()
+    stages = []
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="normalize-error-evidence",
+        prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        max_model_len=32768,
+        evidence_sink=lambda stage, call_index, evidence: stages.append((stage, evidence)),
+    )
+
+    with pytest.raises(ValueError, match="role must be 'assistant'"):
+        recorder.complete(
+            messages=[{"role": "user", "content": "task"}],
+            tools=[],
+            model_name="model",
+            model_kwargs={
+                "max_completion_tokens": 16,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        )
+
+    assert [stage for stage, _ in stages] == [
+        "request_intent",
+        "raw_response",
+        "normalized_response_error",
+        "request_termination",
+    ]
+    assert stages[2][1]["status"] == "invalid_normalized_response"
+    assert stages[3][1]["status"] == "invalid_normalized_response"
     assert recorder.calls == ()
 
 
