@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from lmflow.agentic.appworld_data_factory import finalize_appworld_candidate, summarize_appworld_candidates
+from lmflow.agentic.appworld_data_factory import (
+    _candidate_class,
+    finalize_appworld_candidate,
+    summarize_appworld_candidates,
+)
 from lmflow.agentic.appworld_episode import (
     APPWORLD_PYTHON_TOOL_NAME,
     APPWORLD_REACT_TRAINING_PROJECTION_FORMAT_VERSION,
@@ -13,7 +17,12 @@ from lmflow.agentic.appworld_episode import (
     replay_appworld_episode,
     run_appworld_episode,
 )
-from lmflow.agentic.appworld_protocol import APPWORLD_TINY_TASK_IDS, verify_manifest_digest
+from lmflow.agentic.appworld_protocol import (
+    APPWORLD_CONTEXT_BUDGET_EXHAUSTED,
+    APPWORLD_TINY_TASK_IDS,
+    AppWorldContextBudgetExhaustedError,
+    verify_manifest_digest,
+)
 from lmflow.agentic.appworld_token_native import (
     AppWorldTokenNativeCompletionRecorder,
     assemble_verified_appworld_token_sequence,
@@ -195,6 +204,139 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
     assert metadata["replay_required"] is True
     assert metadata["eligible_for_success_only_sft"] is False
     assert metadata["eligible_for_success_plus_recovery_sft"] is False
+
+
+def test_episode_scores_context_budget_terminal_after_executed_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPWORLD_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.load_reference_prompt",
+        lambda source: "USER:\nTask: {{ instruction }}",
+    )
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.scaffold_identity",
+        lambda source: {"id": "fake-reference", "prompt_sha256": "0" * 64},
+    )
+    monkeypatch.setattr("lmflow.agentic.appworld_episode.configure_appworld_freezegun", lambda: None)
+
+    class ContextExhaustedAfterOneStepBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, messages, tools, model_name, model_kwargs):
+            del messages, tools, model_name, model_kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "I will probe.\n```python\nfail()\n```",
+                    },
+                    "finish_reason": "stop",
+                    "raw_response": {"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+                }
+            raise AppWorldContextBudgetExhaustedError("exact prompt leaves no completion budget")
+
+    result = run_appworld_episode(
+        ContextExhaustedAfterOneStepBackend(),
+        task_id=APPWORLD_TINY_TASK_IDS[0],
+        model_name="student-model",
+        model_revision="fixed",
+        trajectory_id="context-budget:task",
+        appworld_root=tmp_path,
+        appworld_source=tmp_path,
+        experiment_name="context-budget-original",
+        max_steps=2,
+        world_factory=lambda **kwargs: FakeWorld(tmp_path / "original-context-budget"),
+    )
+
+    verify_manifest_digest(result.artifact)
+    metrics = result.artifact["metrics"]
+    assert metrics["success"] is False
+    assert metrics["task_status"] == "incomplete"
+    assert metrics["steps"] == 1
+    assert metrics["model_calls"] == 1
+    assert metrics["termination_reason"] == APPWORLD_CONTEXT_BUDGET_EXHAUSTED
+    assert metrics["failure_type"] == APPWORLD_CONTEXT_BUDGET_EXHAUSTED
+    assert result.artifact["runner_error"] is None
+    assert result.artifact["evaluator_error"] is None
+    assert result.artifact["official_evaluation"]["success"] is False
+    assert result.artifact["official_evaluation"]["num_tests"] == 1
+    assert result.artifact["official_evaluation"]["passes"] == []
+
+    replay = replay_appworld_episode(
+        result.artifact,
+        appworld_root=tmp_path,
+        experiment_name="context-budget-replay",
+        world_factory=lambda **kwargs: FakeWorld(tmp_path / "replay-context-budget"),
+    )
+    finalized = finalize_appworld_candidate(result, replay)
+    assert replay["replay_match"] is True
+    assert finalized.admission["data_class"] == "D"
+    assert finalized.admission["failure_type"] == APPWORLD_CONTEXT_BUDGET_EXHAUSTED
+    assert finalized.admission["admitted_for_sft"] is False
+    assert finalized.training_projection is None
+
+
+def test_episode_keeps_ordinary_backend_error_fail_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPWORLD_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.load_reference_prompt",
+        lambda source: "USER:\nTask: {{ instruction }}",
+    )
+    monkeypatch.setattr(
+        "lmflow.agentic.appworld_episode.scaffold_identity",
+        lambda source: {"id": "fake-reference", "prompt_sha256": "0" * 64},
+    )
+    monkeypatch.setattr("lmflow.agentic.appworld_episode.configure_appworld_freezegun", lambda: None)
+
+    class FailingBackend:
+        def complete(self, *, messages, tools, model_name, model_kwargs):
+            del messages, tools, model_name, model_kwargs
+            raise RuntimeError("ordinary backend failure")
+
+    result = run_appworld_episode(
+        FailingBackend(),
+        task_id=APPWORLD_TINY_TASK_IDS[0],
+        model_name="student-model",
+        model_revision="fixed",
+        trajectory_id="backend-failure:task",
+        appworld_root=tmp_path,
+        appworld_source=tmp_path,
+        experiment_name="backend-failure",
+        max_steps=1,
+        world_factory=lambda **kwargs: FakeWorld(tmp_path / "ordinary-backend-failure"),
+    )
+
+    assert result.artifact["metrics"]["termination_reason"] == "model_backend_error"
+    assert result.artifact["metrics"]["failure_type"] == "model_backend_error"
+    assert result.artifact["metrics"]["task_status"] == "runner_error"
+    assert result.artifact["runner_error"] == {
+        "type": "RuntimeError",
+        "message": "ordinary backend failure",
+    }
+
+
+def test_context_budget_terminal_cannot_be_promoted_to_partial_sft_data():
+    data_class = _candidate_class(
+        {
+            "runner_error": None,
+            "evaluator_error": None,
+            "metrics": {
+                "success": False,
+                "failure_type": APPWORLD_CONTEXT_BUDGET_EXHAUSTED,
+                "invalid_tool_calls": 0,
+                "recovery_count": 0,
+            },
+        },
+        {
+            "replay_error": None,
+            "replay_match": True,
+            "collateral_invariant_passed": True,
+            "sealed_partial_signal": True,
+        },
+    )
+
+    assert data_class == "D"
 
 
 def test_replay_gate_admits_verified_recovery_and_masks_failed_action(monkeypatch, tmp_path):
@@ -779,9 +921,10 @@ def test_token_native_recorder_caps_output_before_sending_request():
     assert recorder.context_budgets == (request_intent["context_budget"],)
 
 
-def test_token_native_recorder_rejects_exhausted_context_before_backend_call():
+@pytest.mark.parametrize("prompt_length", [10, 11])
+def test_token_native_recorder_rejects_exhausted_context_before_backend_call(prompt_length):
     backend = FakeTokenNativeBackend()
-    backend.prompts[0] = tuple(range(10))
+    backend.prompts[0] = tuple(range(prompt_length))
     stages = []
     recorder = AppWorldTokenNativeCompletionRecorder(
         backend,
@@ -791,7 +934,7 @@ def test_token_native_recorder_rejects_exhausted_context_before_backend_call():
         evidence_sink=lambda stage, call_index, evidence: stages.append((stage, evidence)),
     )
 
-    with pytest.raises(ValueError, match="leaves no completion budget"):
+    with pytest.raises(AppWorldContextBudgetExhaustedError, match="leaves no completion budget"):
         recorder.complete(
             messages=[{"role": "user", "content": "task"}],
             tools=[],
@@ -809,6 +952,8 @@ def test_token_native_recorder_rejects_exhausted_context_before_backend_call():
         "request_termination",
     ]
     assert stages[0][1]["request_will_be_sent"] is False
+    assert stages[0][1]["context_budget"]["prompt_tokens"] == prompt_length
     assert stages[0][1]["context_budget"]["effective_output_tokens"] == 0
+    assert stages[1][1]["type"] == "AppWorldContextBudgetExhaustedError"
     assert stages[-1][1]["status"] == "rejected_before_request"
     assert recorder.context_budgets[0]["request_will_be_sent"] is False

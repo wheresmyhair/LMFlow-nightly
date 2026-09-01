@@ -15,9 +15,11 @@ from typing import Any
 
 from lmflow.agentic.appworld_protocol import (
     APPWORLD_CODE_VERSION,
+    APPWORLD_CONTEXT_BUDGET_EXHAUSTED,
     APPWORLD_DATA_VERSION,
     APPWORLD_REVISION,
     APPWORLD_SOURCE_SPLIT,
+    AppWorldContextBudgetExhaustedError,
     canonical_appworld_sliced_instance_id,
     canonical_json_sha256,
     verify_manifest_digest,
@@ -386,7 +388,8 @@ def appworld_artifact_to_semantic_conversation(artifact: Mapping[str, Any]) -> d
 
         has_later_model_step = index + 1 < len(model_steps)
         observation_was_visible = has_later_model_step or (
-            index == len(model_steps) - 1 and metrics.get("termination_reason") == "model_backend_error"
+            index == len(model_steps) - 1
+            and metrics.get("termination_reason") in {"model_backend_error", APPWORLD_CONTEXT_BUDGET_EXHAUSTED}
         )
         if observation_was_visible:
             if action is None:
@@ -442,6 +445,8 @@ def _action_is_valid(code: str, output: str) -> bool:
 def _failure_type(*, official_success: bool, termination_reason: str, invalid_actions: int) -> str | None:
     if official_success:
         return None
+    if termination_reason == APPWORLD_CONTEXT_BUDGET_EXHAUSTED:
+        return APPWORLD_CONTEXT_BUDGET_EXHAUSTED
     if termination_reason == "model_backend_error":
         return "model_backend_error"
     if termination_reason == "environment_error":
@@ -599,6 +604,9 @@ def run_appworld_episode(
                     model_kwargs=copy.deepcopy(dict(model_kwargs)),
                 )
                 completion = normalize_completion_response(response)
+            except AppWorldContextBudgetExhaustedError:
+                termination_reason = APPWORLD_CONTEXT_BUDGET_EXHAUSTED
+                break
             except Exception as error:
                 runner_error = {"type": type(error).__name__, "message": str(error)}
                 termination_reason = "model_backend_error"

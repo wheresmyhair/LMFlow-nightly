@@ -21,6 +21,7 @@ from lmflow.agentic.appworld_episode import (
     run_appworld_episode,
 )
 from lmflow.agentic.appworld_protocol import (
+    APPWORLD_CONTEXT_BUDGET_EXHAUSTED,
     APPWORLD_DATA_PILOT_SCENARIOS,
     APPWORLD_DATA_PILOT_TASK_IDS,
     APPWORLD_REVISION,
@@ -76,6 +77,8 @@ def _candidate_class(artifact: Mapping[str, Any], replay: Mapping[str, Any]) -> 
         return "E"
     if replay.get("replay_error") is not None or replay.get("replay_match") is not True:
         return "E"
+    if metrics.get("failure_type") == APPWORLD_CONTEXT_BUDGET_EXHAUSTED:
+        return "D"
     official_success = metrics.get("success") is True
     collateral_verified = replay.get("collateral_invariant_passed") is True
     invalid_actions = metrics.get("invalid_tool_calls", 0)
