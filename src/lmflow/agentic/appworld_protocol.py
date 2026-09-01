@@ -14,6 +14,8 @@ from lmflow.datasets import Dataset
 APPWORLD_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-tiny-protocol/v1"
 APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-data-pilot-protocol/v1"
 APPWORLD_SCENARIO_CURRICULUM_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-scenario-curriculum-protocol/v1"
+APPWORLD_TRAIN_D1_D2_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-train-d1-d2-protocol/v1"
+APPWORLD_TRAIN_D1_D2_EXPANSION_PROTOCOL_FORMAT_VERSION = "lmflow.appworld-train-d1-d2-expansion-protocol/v1"
 APPWORLD_REPOSITORY = "https://github.com/StonyBrookNLP/appworld.git"
 APPWORLD_REVISION = "a072b7a86e7c1d5b1d7175659d750ebb9b79f10a"
 APPWORLD_CODE_VERSION = "0.2.0.dev0"
@@ -83,6 +85,49 @@ APPWORLD_SCENARIO_CURRICULUM_TASK_IDS = tuple(
     f"{scenario_id}_{variant}" for scenario_id in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS for variant in (1, 2, 3)
 )
 APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256 = "969c03630fe2f4f66d5a67aca5c7b91cda76c1146ee33c221699bc892a370da5"
+
+# All official Train scenarios at difficulties 1 and 2 form the target
+# scenario-diverse coverage set. Their order is inherited from AppWorld's
+# pinned train split and difficulty filters.
+APPWORLD_TRAIN_D1_D2_SCENARIOS = {
+    "82e2fac": {"difficulty": 1, "official_scenario_index": 0},
+    "287e338": {"difficulty": 1, "official_scenario_index": 1},
+    "27e1026": {"difficulty": 1, "official_scenario_index": 2},
+    "e3d6c94": {"difficulty": 1, "official_scenario_index": 3},
+    "771d8fc": {"difficulty": 1, "official_scenario_index": 4},
+    "07b42fd": {"difficulty": 1, "official_scenario_index": 5},
+    "cf6abd2": {"difficulty": 1, "official_scenario_index": 6},
+    "302c169": {"difficulty": 1, "official_scenario_index": 7},
+    "e7a10f8": {"difficulty": 1, "official_scenario_index": 8},
+    "c901732": {"difficulty": 1, "official_scenario_index": 9},
+    "6ea6792": {"difficulty": 1, "official_scenario_index": 10},
+    "e85d92a": {"difficulty": 1, "official_scenario_index": 11},
+    "692c77d": {"difficulty": 2, "official_scenario_index": 0},
+    "2a163ab": {"difficulty": 2, "official_scenario_index": 1},
+    "29caf6f": {"difficulty": 2, "official_scenario_index": 2},
+    "d0b1f43": {"difficulty": 2, "official_scenario_index": 3},
+    "b7a9ee9": {"difficulty": 2, "official_scenario_index": 4},
+    "76f2c72": {"difficulty": 2, "official_scenario_index": 5},
+    "ce359b5": {"difficulty": 2, "official_scenario_index": 6},
+    "229360a": {"difficulty": 2, "official_scenario_index": 7},
+    "7d7fbf6": {"difficulty": 2, "official_scenario_index": 8},
+    "ccb4494": {"difficulty": 2, "official_scenario_index": 9},
+    "60d0b5b": {"difficulty": 2, "official_scenario_index": 10},
+    "aa8502b": {"difficulty": 2, "official_scenario_index": 11},
+}
+APPWORLD_TRAIN_D1_D2_TASK_IDS = tuple(
+    f"{scenario_id}_{variant}" for scenario_id in APPWORLD_TRAIN_D1_D2_SCENARIOS for variant in (1, 2, 3)
+)
+APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256 = "4b6e14cfe98be52dd1844cbed5fc4ad609da21b32c9db198bbd078137bcb69a9"
+APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS = {
+    scenario_id: metadata
+    for scenario_id, metadata in APPWORLD_TRAIN_D1_D2_SCENARIOS.items()
+    if scenario_id not in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS
+}
+APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS = tuple(
+    f"{scenario_id}_{variant}" for scenario_id in APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS for variant in (1, 2, 3)
+)
+APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_SET_SHA256 = "bba246e4b220ada3ac0202ea2822511afd370c5a595e7fe442f276d46ae47b6d"
 
 
 def _sha256_file(path: Path) -> str:
@@ -192,6 +237,26 @@ def _validate_official_splits(root: Path, load_task_ids: Any) -> dict[str, tuple
         )
         if selected_scenarios != ordered_scenarios[1:3]:
             raise ValueError(f"AppWorld scenario-curriculum difficulty-{difficulty} selection rule changed")
+    d1_d2_task_ids = tuple(
+        task_id
+        for difficulty in (1, 2)
+        for task_id in load_task_ids("train", difficulty=difficulty, num_tasks_per_scenario=3)
+    )
+    if d1_d2_task_ids != APPWORLD_TRAIN_D1_D2_TASK_IDS:
+        raise ValueError("AppWorld Train difficulty-1/2 ordered task set changed")
+    if canonical_json_sha256(list(d1_d2_task_ids)) != APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256:
+        raise RuntimeError("AppWorld Train difficulty-1/2 task-set digest changed")
+    expected_expansion = tuple(
+        task_id for task_id in d1_d2_task_ids if _scenario_id(task_id) not in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS
+    )
+    if expected_expansion != APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS:
+        raise ValueError("AppWorld Train difficulty-1/2 expansion task set changed")
+    if set(APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS) & set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS):
+        raise RuntimeError("AppWorld inherited and expansion task sets overlap")
+    if set(APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS) | set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS) != set(
+        APPWORLD_TRAIN_D1_D2_TASK_IDS
+    ):
+        raise RuntimeError("AppWorld inherited and expansion task sets do not cover Train difficulty 1/2")
     return split_task_ids
 
 
@@ -211,6 +276,7 @@ def canonical_appworld_sliced_instance_id(task_id: str, *, source_split: str) ->
     if source_split == "train" and task_id in {
         *APPWORLD_DATA_PILOT_TASK_IDS,
         *APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
+        *APPWORLD_TRAIN_D1_D2_TASK_IDS,
     }:
         return f"{APPWORLD_REPOSITORY}@{APPWORLD_REVISION}/data-{APPWORLD_DATA_VERSION}/train/{task_id}"
     raise ValueError(f"task {task_id!r} is outside the pinned AppWorld {source_split!r} slice")
@@ -444,6 +510,53 @@ def load_pinned_appworld_scenario_curriculum_dataset(
     )
 
 
+def load_pinned_appworld_train_d1_d2_dataset(
+    *,
+    appworld_root: str | os.PathLike[str],
+) -> tuple[Dataset, dict[str, Any]]:
+    """Load all official Train difficulty-1/2 tasks for final coverage."""
+
+    root = _configure_root(appworld_root)
+    _, Task, load_task_ids = _require_appworld()
+    split_task_ids = _validate_official_splits(root, load_task_ids)
+    return _load_pinned_appworld_train_slice_dataset(
+        root=root,
+        task_type=Task,
+        split_task_ids=split_task_ids,
+        format_version=APPWORLD_TRAIN_D1_D2_PROTOCOL_FORMAT_VERSION,
+        task_set_key="train_d1_d2_task_set",
+        task_ids=APPWORLD_TRAIN_D1_D2_TASK_IDS,
+        task_set_sha256=APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256,
+        scenarios=APPWORLD_TRAIN_D1_D2_SCENARIOS,
+        selection_rule="all official Train difficulty-1/2 scenarios and all three variants in official order",
+    )
+
+
+def load_pinned_appworld_train_d1_d2_expansion_dataset(
+    *,
+    appworld_root: str | os.PathLike[str],
+) -> tuple[Dataset, dict[str, Any]]:
+    """Load the 60 tasks not already covered by the sealed scenario curriculum."""
+
+    root = _configure_root(appworld_root)
+    _, Task, load_task_ids = _require_appworld()
+    split_task_ids = _validate_official_splits(root, load_task_ids)
+    return _load_pinned_appworld_train_slice_dataset(
+        root=root,
+        task_type=Task,
+        split_task_ids=split_task_ids,
+        format_version=APPWORLD_TRAIN_D1_D2_EXPANSION_PROTOCOL_FORMAT_VERSION,
+        task_set_key="train_d1_d2_expansion_task_set",
+        task_ids=APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS,
+        task_set_sha256=APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_SET_SHA256,
+        scenarios=APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS,
+        selection_rule=(
+            "all official Train difficulty-1/2 tasks except the four scenarios inherited from the sealed "
+            "scenario-curriculum aggregate"
+        ),
+    )
+
+
 __all__ = [
     "APPWORLD_CODE_VERSION",
     "APPWORLD_DATA_PILOT_PROTOCOL_FORMAT_VERSION",
@@ -461,11 +574,21 @@ __all__ = [
     "APPWORLD_SOURCE_SPLIT",
     "APPWORLD_TINY_SCENARIOS",
     "APPWORLD_TINY_TASK_IDS",
+    "APPWORLD_TRAIN_D1_D2_EXPANSION_PROTOCOL_FORMAT_VERSION",
+    "APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS",
+    "APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS",
+    "APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_SET_SHA256",
+    "APPWORLD_TRAIN_D1_D2_PROTOCOL_FORMAT_VERSION",
+    "APPWORLD_TRAIN_D1_D2_SCENARIOS",
+    "APPWORLD_TRAIN_D1_D2_TASK_IDS",
+    "APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256",
     "canonical_appworld_instance_id",
     "canonical_appworld_sliced_instance_id",
     "canonical_json_sha256",
     "load_pinned_appworld_data_pilot_dataset",
     "load_pinned_appworld_scenario_curriculum_dataset",
+    "load_pinned_appworld_train_d1_d2_dataset",
+    "load_pinned_appworld_train_d1_d2_expansion_dataset",
     "load_pinned_appworld_tiny_dataset",
     "verify_manifest_digest",
     "with_manifest_digest",
