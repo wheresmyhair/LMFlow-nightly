@@ -13,6 +13,12 @@ from lmflow.agentic.appworld_protocol import (
     APPWORLD_TINY_SCENARIOS,
     APPWORLD_TINY_TASK_IDS,
     APPWORLD_TINY_TASK_SET_SHA256,
+    APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS,
+    APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS,
+    APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_SET_SHA256,
+    APPWORLD_TRAIN_D1_D2_SCENARIOS,
+    APPWORLD_TRAIN_D1_D2_TASK_IDS,
+    APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256,
     canonical_appworld_instance_id,
     canonical_appworld_sliced_instance_id,
     canonical_json_sha256,
@@ -96,6 +102,24 @@ def test_scenario_curriculum_is_four_new_complete_d1_d2_train_scenarios():
     assert canonical_appworld_sliced_instance_id(
         APPWORLD_SCENARIO_CURRICULUM_TASK_IDS[0], source_split="train"
     ).endswith("/train/287e338_1")
+
+
+def test_train_d1_d2_coverage_and_expansion_are_complete_and_disjoint():
+    assert len(APPWORLD_TRAIN_D1_D2_SCENARIOS) == 24
+    assert len(APPWORLD_TRAIN_D1_D2_TASK_IDS) == 72
+    assert len(APPWORLD_TRAIN_D1_D2_EXPANSION_SCENARIOS) == 20
+    assert len(APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS) == 60
+    assert canonical_json_sha256(list(APPWORLD_TRAIN_D1_D2_TASK_IDS)) == APPWORLD_TRAIN_D1_D2_TASK_SET_SHA256
+    assert canonical_json_sha256(list(APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS)) == (
+        APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_SET_SHA256
+    )
+    inherited = set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS)
+    expansion = set(APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS)
+    assert inherited.isdisjoint(expansion)
+    assert inherited | expansion == set(APPWORLD_TRAIN_D1_D2_TASK_IDS)
+    assert canonical_appworld_sliced_instance_id(
+        APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS[-1], source_split="train"
+    ).endswith("/train/aa8502b_3")
 
 
 def test_manifest_digest_fails_closed_after_mutation():

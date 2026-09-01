@@ -26,9 +26,11 @@ from lmflow.agentic.appworld_protocol import (
     APPWORLD_REVISION,
     APPWORLD_SCENARIO_CURRICULUM_SCENARIOS,
     APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
+    APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS,
     canonical_json_sha256,
     load_pinned_appworld_data_pilot_dataset,
     load_pinned_appworld_scenario_curriculum_dataset,
+    load_pinned_appworld_train_d1_d2_expansion_dataset,
     verify_manifest_digest,
     with_manifest_digest,
 )
@@ -46,7 +48,11 @@ from lmflow.agentic.data_construction import (
 APPWORLD_DATA_CANDIDATE_FORMAT_VERSION = "lmflow.appworld-data-candidate/v1"
 APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION = "lmflow.appworld-data-factory-run/v3"
 APPWORLD_DATA_CLASSES = ("A", "B", "C", "D", "E")
-APPWORLD_DATA_FACTORY_TASK_SET_IDS = ("initial_pilot", "scenario_curriculum_v1")
+APPWORLD_DATA_FACTORY_TASK_SET_IDS = (
+    "initial_pilot",
+    "scenario_curriculum_v1",
+    "train_d1_d2_expansion_v1",
+)
 
 
 @dataclass
@@ -561,6 +567,7 @@ class _AppWorldDataConstructionAdapter:
                 eligible=lambda record, tag=tag: tag in record["selection_tags"],
                 dedup_key=dedup_key,
                 rank_key=rank_key,
+                output_order_key=lambda record: record["ordinal"],
             )
         return policies
 
@@ -623,9 +630,12 @@ def run_appworld_data_factory(
     if task_set_id == "initial_pilot":
         task_ids = APPWORLD_DATA_PILOT_TASK_IDS
         dataset, dataset_manifest = load_pinned_appworld_data_pilot_dataset(appworld_root=appworld_root)
-    else:
+    elif task_set_id == "scenario_curriculum_v1":
         task_ids = APPWORLD_SCENARIO_CURRICULUM_TASK_IDS
         dataset, dataset_manifest = load_pinned_appworld_scenario_curriculum_dataset(appworld_root=appworld_root)
+    else:
+        task_ids = APPWORLD_TRAIN_D1_D2_EXPANSION_TASK_IDS
+        dataset, dataset_manifest = load_pinned_appworld_train_d1_d2_expansion_dataset(appworld_root=appworld_root)
     plan_entries = []
     for task_id in task_ids:
         for candidate_index, candidate_sampling in enumerate(sampling_profiles):

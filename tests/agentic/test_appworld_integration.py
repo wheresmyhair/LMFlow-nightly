@@ -12,6 +12,8 @@ from lmflow.agentic.appworld_protocol import (
     APPWORLD_TINY_TASK_IDS,
     load_pinned_appworld_data_pilot_dataset,
     load_pinned_appworld_scenario_curriculum_dataset,
+    load_pinned_appworld_train_d1_d2_dataset,
+    load_pinned_appworld_train_d1_d2_expansion_dataset,
 )
 from lmflow.agentic.evaluate_appworld import verify_appworld_install
 
@@ -57,6 +59,16 @@ def test_pinned_appworld_tiny_load_reset_and_official_evaluator():
     assert curriculum_manifest["scenario_disjoint"] is True
     assert curriculum_manifest["source"]["split"] == "train"
     assert curriculum_manifest["scenario_curriculum_task_set"]["scenario_count"] == 4
+    d1_d2_dataset, d1_d2_manifest = load_pinned_appworld_train_d1_d2_dataset(appworld_root=appworld_root)
+    assert len(d1_d2_dataset) == 72
+    assert d1_d2_manifest["scenario_disjoint"] is True
+    assert d1_d2_manifest["train_d1_d2_task_set"]["scenario_count"] == 24
+    expansion_dataset, expansion_manifest = load_pinned_appworld_train_d1_d2_expansion_dataset(
+        appworld_root=appworld_root
+    )
+    assert len(expansion_dataset) == 60
+    assert expansion_manifest["scenario_disjoint"] is True
+    assert expansion_manifest["train_d1_d2_expansion_task_set"]["scenario_count"] == 20
 
 
 @pytest.mark.optional_backend

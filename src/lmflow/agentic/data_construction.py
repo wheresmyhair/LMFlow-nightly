@@ -350,6 +350,7 @@ def build_selection_manifest(
     eligible: Callable[[Mapping[str, Any]], bool],
     dedup_key: Callable[[Mapping[str, Any]], Any],
     rank_key: Callable[[Mapping[str, Any]], Any],
+    output_order_key: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     """Select deterministic candidate references without interpreting quality."""
 
@@ -382,6 +383,9 @@ def build_selection_manifest(
         )
         selected.append(_candidate_reference(ranked[0]))
         duplicates.extend(_candidate_reference(record) for record in ranked[1:])
+    if output_order_key is not None:
+        selected.sort(key=output_order_key)
+        duplicates.sort(key=output_order_key)
     return with_manifest_digest(
         {
             "format_version": DATA_CONSTRUCTION_SELECTION_FORMAT_VERSION,
@@ -481,7 +485,12 @@ def build_resume_manifest(
     )
 
 
-def _write_artifact_manifest(root: Path) -> None:
+def write_artifact_manifest(root: str | os.PathLike[str]) -> None:
+    """Seal every existing artifact file under ``root`` into a new manifest."""
+
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"artifact root must be a non-symlink directory: {root}")
     manifest_path = root / "artifact-manifest.sha256"
     if manifest_path.exists():
         raise FileExistsError(manifest_path)
@@ -793,7 +802,7 @@ def run_data_construction_attempt(
         )
         _new_json_file(staging / "attempt-manifest.json", attempt_manifest)
         _new_json_file(staging / "report.json", report)
-        _write_artifact_manifest(staging)
+        write_artifact_manifest(staging)
         staging.rename(target)
         return copy.deepcopy(report)
     except BaseException as error:
@@ -843,5 +852,6 @@ __all__ = [
     "run_data_construction_attempt",
     "verify_artifact_manifest",
     "verify_manifest_digest",
+    "write_artifact_manifest",
     "with_manifest_digest",
 ]
