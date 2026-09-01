@@ -198,6 +198,7 @@ def test_episode_records_failure_recovery_state_and_training_projection(monkeypa
 
 
 def test_replay_gate_admits_verified_recovery_and_masks_failed_action(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPWORLD_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "lmflow.agentic.appworld_episode.load_reference_prompt",
         lambda source: "USER:\nTask: {{ instruction }}",
@@ -246,6 +247,7 @@ def test_replay_gate_admits_verified_recovery_and_masks_failed_action(monkeypatc
 
 
 def test_replay_mismatch_is_excluded_as_invalid_infrastructure(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPWORLD_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "lmflow.agentic.appworld_episode.load_reference_prompt",
         lambda source: "USER:\nTask: {{ instruction }}",
@@ -347,6 +349,10 @@ class FakeTokenNativeBackend:
 
 
 def test_token_native_appworld_fixture_preserves_policy_and_observation_tokens(monkeypatch, tmp_path):
+    # run_appworld_episode configures AppWorld through its process-wide root.
+    # Register the fixture root with monkeypatch so the caller's root is restored
+    # before optional real-environment tests run in the same pytest process.
+    monkeypatch.setenv("APPWORLD_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "lmflow.agentic.appworld_episode.load_reference_prompt",
         lambda source: "USER:\nTask: {{ instruction }}",

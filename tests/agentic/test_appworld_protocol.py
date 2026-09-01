@@ -7,6 +7,9 @@ import pytest
 from lmflow.agentic.appworld_protocol import (
     APPWORLD_DATA_PILOT_SCENARIOS,
     APPWORLD_DATA_PILOT_TASK_IDS,
+    APPWORLD_SCENARIO_CURRICULUM_SCENARIOS,
+    APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
+    APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256,
     APPWORLD_TINY_SCENARIOS,
     APPWORLD_TINY_TASK_IDS,
     APPWORLD_TINY_TASK_SET_SHA256,
@@ -70,6 +73,29 @@ def test_data_pilot_is_three_complete_train_scenarios_selected_by_difficulty():
     )
     with pytest.raises(ValueError, match="outside"):
         canonical_appworld_sliced_instance_id(APPWORLD_DATA_PILOT_TASK_IDS[0], source_split="dev")
+
+
+def test_scenario_curriculum_is_four_new_complete_d1_d2_train_scenarios():
+    assert len(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS) == 12
+    assert [scenario["difficulty"] for scenario in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS.values()] == [
+        1,
+        1,
+        2,
+        2,
+    ]
+    assert set(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS).isdisjoint(APPWORLD_DATA_PILOT_TASK_IDS)
+    for scenario_id in APPWORLD_SCENARIO_CURRICULUM_SCENARIOS:
+        assert [task_id for task_id in APPWORLD_SCENARIO_CURRICULUM_TASK_IDS if task_id.startswith(scenario_id)] == [
+            f"{scenario_id}_1",
+            f"{scenario_id}_2",
+            f"{scenario_id}_3",
+        ]
+    assert canonical_json_sha256(list(APPWORLD_SCENARIO_CURRICULUM_TASK_IDS)) == (
+        APPWORLD_SCENARIO_CURRICULUM_TASK_SET_SHA256
+    )
+    assert canonical_appworld_sliced_instance_id(
+        APPWORLD_SCENARIO_CURRICULUM_TASK_IDS[0], source_split="train"
+    ).endswith("/train/287e338_1")
 
 
 def test_manifest_digest_fails_closed_after_mutation():

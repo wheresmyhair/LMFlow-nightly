@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from datasets import load_dataset
 
+from lmflow.agentic.data_construction import canonical_json_sha256, verify_manifest_digest, with_manifest_digest
 from lmflow.datasets import Dataset
 from lmflow.pipeline.evaluation.result import EvaluationResult
 
@@ -57,19 +58,6 @@ _EXPECTED_SOURCE_CONTENT_SHA256 = {
 }
 
 
-def canonical_json_sha256(value: Any) -> str:
-    """Hash one JSON value using the protocol's canonical encoding."""
-
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _is_sha256(value: Any) -> bool:
     if not isinstance(value, str) or len(value) != 64:
         return False
@@ -78,31 +66,6 @@ def _is_sha256(value: Any) -> bool:
     except ValueError:
         return False
     return True
-
-
-def with_manifest_digest(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON copy with a digest over every field except the digest."""
-
-    if not isinstance(payload, Mapping):
-        raise TypeError("manifest payload must be a mapping")
-    if "manifest_sha256" in payload:
-        raise ValueError("manifest payload must not already contain manifest_sha256")
-    copied = json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False))
-    copied["manifest_sha256"] = canonical_json_sha256(copied)
-    return copied
-
-
-def verify_manifest_digest(manifest: Mapping[str, Any]) -> None:
-    """Fail closed when a stored manifest is malformed or has changed."""
-
-    if not isinstance(manifest, Mapping):
-        raise TypeError("manifest must be a mapping")
-    expected = manifest.get("manifest_sha256")
-    if not _is_sha256(expected):
-        raise ValueError("manifest must contain a SHA-256 manifest_sha256")
-    payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    if canonical_json_sha256(payload) != expected:
-        raise ValueError("manifest_sha256 does not match the manifest content")
 
 
 def canonical_gsm8k_instance_id(source_split: str, source_index: int) -> str:

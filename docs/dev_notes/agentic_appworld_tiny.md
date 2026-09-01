@@ -234,7 +234,7 @@ in 139 scenarios. Their task-list SHA-256 values are respectively
 and `3c32b481042ac97f7d3477d53f5d196245c885c438d652944edc8a9a28e0f028`.
 The scenario-ID intersection is empty for every split pair.
 
-The unpaid pilot protocol deterministically freezes the first complete train
+The initial pilot protocol deterministically freezes the first complete train
 scenario in official order at each difficulty:
 
 | Difficulty | Scenario | Tasks |
@@ -245,10 +245,24 @@ scenario in official order at each difficulty:
 
 The ordered pilot task-ID SHA-256 is
 `d8a89fb3037ce6fe078d72517b80146c1c2cd1f6c007cad79beaa06aa3252327`.
-Two to four candidates per task produce an 18-36 trajectory micro pilot. A
-provider, model, endpoint identity, sampling profile, effective pricing source,
-and explicit paid-run approval are still required before execution. No online
-teacher call has been made by this slice.
+The completed two-candidate teacher pilot produced verified A/B trajectories
+for difficulties 1 and 2, but none for difficulty 3. The next scenario-diverse
+candidate therefore takes the next two complete official train scenarios at
+each of difficulties 1 and 2, without selecting on model outcomes:
+
+| Difficulty | Official indices | Scenarios | Tasks |
+|---|---|---|---|
+| 1 | 1, 2 | `287e338`, `27e1026` | three variants per scenario |
+| 2 | 1, 2 | `2a163ab`, `29caf6f` | three variants per scenario |
+
+Its 12 ordered task IDs have SHA-256
+`969c03630fe2f4f66d5a67aca5c7b91cda76c1146ee33c221699bc892a370da5`.
+The initial and scenario-curriculum task sets are disjoint, and both remain
+scenario-disjoint from dev and test. At two candidates per task the curriculum
+pilot would execute 24 trajectories. It remains a candidate until its provider,
+model revision, endpoint, per-candidate seeds, sampling, current pricing, cost
+ceiling, and separate paid-API authorization are frozen. Difficulty 3 expansion
+is a later decision rather than an implicit part of this slice.
 
 Every candidate follows a fail-closed path:
 
@@ -276,6 +290,42 @@ artifacts outside Git; Conversation projections contain no verifier details or
 hidden state. D can produce Preference only after a separately verified
 improved pair under the same task and reset, which this first factory slice does
 not synthesize.
+
+Factory runs select a pinned task-set identity instead of accepting arbitrary
+task IDs. Candidate seeds are explicit and unique when supplied, and each
+candidate record carries its actual sampling profile. If a run fails after
+partial evidence exists, the staging directory is moved to a non-overwriting
+failed-run location rather than deleted; a new attempt still requires a new run
+identity.
+
+The execution-neutral lifecycle now has a narrow shared implementation in
+`lmflow.agentic.data_construction`. It freezes an ordered candidate plan before
+provider execution, then publishes immutable interaction, verification,
+admission, projection, evidence, candidate-record, selection, and attempt
+artifacts. The stable plan slot is `(task_id, sample_id)` with a plan ordinal;
+the attempt ID remains separate. This matters for real provider runs: one
+attempt can preserve an infrastructure-class result and a later attempt can
+resolve the same slot, while a second canonical-eligible execution for an
+already resolved slot fails the resume audit.
+
+The shared layer owns JSON/digest validation, plan and attempt lineage,
+evidence-first failure staging, O_EXCL publication, deterministic dedup and
+selection references, artifact file hashes, and resume/idempotency checks. Its
+adapter protocol deliberately leaves task interaction, official verification,
+admission classes, quality ranking, and training projection to the benchmark.
+The AppWorld adapter therefore continues to own fresh reset/replay, collateral
+invariants, A-E semantics, recovery masking, action-path dedup, and the two SFT
+selection arms. `scheduled_ordinals` allows a later immutable attempt to run
+only unresolved plan slots without changing the frozen task/seed schedule.
+
+This extraction does not define a public verifier plugin, a universal quality
+score, a generic episode executor, or a generic cold-start SFT schema. Usage,
+token, cost, failure, and benchmark-quality facts are retained in immutable
+candidate metadata and attempt summaries without assigning cross-benchmark
+meaning to them. The existing aggregate's 24 canonical A/B records remain
+sealed evidence; provider-failed attempts stay outside the canonical
+denominator. Long-sequence and controlled-prefix handling for the two records
+above 32K remains a later AppWorld policy decision.
 
 The unified agentic virtual environment can retain an editable-install pointer
 to a different LMFlow worktree. Tests and local entry points for this slice must
@@ -323,5 +373,6 @@ Possible cross-benchmark review inputs, still unconfirmed:
 - atomic artifact publication and provider-behavior provenance are candidates
   for reuse after a third concrete path confirms them.
 
-These are evidence items for the post-AppWorld architecture review. This slice
-keeps them inside the AppWorld module and does not change the public Evaluator.
+These are evidence items for the post-AppWorld architecture review. Only the
+artifact lifecycle mechanics described above have moved to a shared module;
+episode, capability, report, and Evaluator semantics remain unchanged.

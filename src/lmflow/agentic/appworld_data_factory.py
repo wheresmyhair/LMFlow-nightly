@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import os
 import shutil
-import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,18 +21,32 @@ from lmflow.agentic.appworld_episode import (
     run_appworld_episode,
 )
 from lmflow.agentic.appworld_protocol import (
+    APPWORLD_DATA_PILOT_SCENARIOS,
     APPWORLD_DATA_PILOT_TASK_IDS,
     APPWORLD_REVISION,
+    APPWORLD_SCENARIO_CURRICULUM_SCENARIOS,
+    APPWORLD_SCENARIO_CURRICULUM_TASK_IDS,
     canonical_json_sha256,
     load_pinned_appworld_data_pilot_dataset,
+    load_pinned_appworld_scenario_curriculum_dataset,
     verify_manifest_digest,
     with_manifest_digest,
 )
 from lmflow.agentic.completion import CompletionBackend
+from lmflow.agentic.data_construction import (
+    AdmissionProduct,
+    CandidateContext,
+    CandidatePlanEntry,
+    StageProduct,
+    build_candidate_plan,
+    build_selection_manifest,
+    run_data_construction_attempt,
+)
 
 APPWORLD_DATA_CANDIDATE_FORMAT_VERSION = "lmflow.appworld-data-candidate/v1"
-APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION = "lmflow.appworld-data-factory-run/v1"
+APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION = "lmflow.appworld-data-factory-run/v3"
 APPWORLD_DATA_CLASSES = ("A", "B", "C", "D", "E")
+APPWORLD_DATA_FACTORY_TASK_SET_IDS = ("initial_pilot", "scenario_curriculum_v1")
 
 
 @dataclass
@@ -336,25 +348,6 @@ def _candidate_cost_usd(artifact: Mapping[str, Any], provider_identity: Mapping[
     ) / 1_000_000
 
 
-def _new_json_file(path: Path, value: Mapping[str, Any]) -> None:
-    if path.exists():
-        raise FileExistsError(f"refusing to overwrite {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8", newline="\n") as output_file:
-        json.dump(value, output_file, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2)
-        output_file.write("\n")
-        output_file.flush()
-        os.fsync(output_file.fileno())
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as input_file:
-        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _copy_raw_outputs(source: Path, destination: Path) -> list[str]:
     copied = []
     for name in ("logs", "version", "evaluation", "misc"):
@@ -371,6 +364,207 @@ def _copy_raw_outputs(source: Path, destination: Path) -> list[str]:
     return copied
 
 
+class _AppWorldDataConstructionAdapter:
+    """Keep AppWorld execution and quality semantics behind the shared lifecycle."""
+
+    def __init__(
+        self,
+        backend: CompletionBackend,
+        *,
+        run_id: str,
+        appworld_root: str | os.PathLike[str],
+        appworld_source: str | os.PathLike[str],
+        teacher_model_name: str,
+        teacher_model_revision: str,
+        provider_identity: Mapping[str, Any],
+        max_steps: int,
+    ) -> None:
+        self._backend = backend
+        self._run_id = run_id
+        self._appworld_root = appworld_root
+        self._appworld_source = appworld_source
+        self._teacher_model_name = teacher_model_name
+        self._teacher_model_revision = teacher_model_revision
+        self._provider_identity = provider_identity
+        self._max_steps = max_steps
+
+    @property
+    def identity(self) -> Mapping[str, Any]:
+        return {
+            "adapter_id": "appworld-data-factory-v1",
+            "adapter_format_version": APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION,
+            "appworld_revision": APPWORLD_REVISION,
+            "verification": "fresh-reset replay plus official evaluator facts",
+            "admission": "AppWorld benchmark-local A-E v1",
+            "projection": "AppWorld semantic conversation v2 with per-action loss",
+        }
+
+    def interact(self, context: CandidateContext) -> StageProduct:
+        result = run_appworld_episode(
+            self._backend,
+            task_id=context.plan_entry.task_id,
+            model_name=self._teacher_model_name,
+            model_revision=self._teacher_model_revision,
+            trajectory_id=context.candidate_id,
+            appworld_root=self._appworld_root,
+            appworld_source=self._appworld_source,
+            experiment_name=f"lmflow-appworld-data/{self._run_id}/{context.plan_entry.ordinal:05d}",
+            model_kwargs=context.plan_entry.sampling,
+            max_steps=self._max_steps,
+            source_split="train",
+        )
+        return StageProduct(artifact=result.artifact, state=result)
+
+    def verify(self, context: CandidateContext, interaction: StageProduct) -> StageProduct:
+        replay = replay_appworld_episode(
+            interaction.artifact,
+            appworld_root=self._appworld_root,
+            experiment_name=f"lmflow-appworld-data-replay/{self._run_id}/{context.plan_entry.ordinal:05d}",
+        )
+        return StageProduct(artifact=replay, state=replay)
+
+    def admit(
+        self,
+        context: CandidateContext,
+        interaction: StageProduct,
+        verification: StageProduct,
+    ) -> AdmissionProduct:
+        finalized = finalize_appworld_candidate(
+            interaction.state,
+            verification.artifact,
+            cost_usd=_candidate_cost_usd(interaction.artifact, self._provider_identity),
+        )
+        admission = finalized.admission
+        artifact = interaction.artifact
+        metrics = artifact["metrics"]
+        action_codes = [step.get("code") for step in artifact.get("action_steps", [])]
+        duplicate_action_count = len(action_codes) - len(set(action_codes))
+        scenario_id = context.plan_entry.task_id.split("_", 1)[0]
+        scenario = {
+            **APPWORLD_DATA_PILOT_SCENARIOS,
+            **APPWORLD_SCENARIO_CURRICULUM_SCENARIOS,
+        }[scenario_id]
+        tags = []
+        if admission["sft_arms"]["success_only"] is True:
+            tags.append("success-only")
+        if admission["sft_arms"]["success_plus_recovery"] is True:
+            tags.append("success-plus-recovery")
+        usage = metrics.get("usage") if isinstance(metrics.get("usage"), Mapping) else {}
+        metadata = {
+            "benchmark": "appworld",
+            "source_split": "train",
+            "scenario_id": scenario_id,
+            "difficulty": scenario["difficulty"],
+            "data_class": admission["data_class"],
+            "admitted_for_sft": admission["admitted_for_sft"],
+            "official_success": metrics.get("success") is True,
+            "replay_match": admission["replay_match"],
+            "collateral_invariant_passed": admission["collateral_invariant_passed"],
+            "hidden_verifier_material_included": admission["hidden_verifier_material_included"],
+            "truncated": admission["truncated"],
+            "invalid_actions": metrics.get("invalid_tool_calls", 0),
+            "recovery_count": metrics.get("recovery_count", 0),
+            "state_change_steps": metrics.get("state_change_steps", 0),
+            "action_path_sha256": canonical_json_sha256(action_codes),
+            "duplicate_action_count": duplicate_action_count,
+            "duplicate_target_sha256": admission.get("duplicate_target_sha256"),
+            "usage": {
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+            "cost_usd": admission.get("cost_usd"),
+        }
+        return AdmissionProduct(
+            artifact=admission,
+            state=finalized,
+            selection_tags=tuple(tags),
+            record_metadata=metadata,
+        )
+
+    def project(
+        self,
+        context: CandidateContext,
+        interaction: StageProduct,
+        verification: StageProduct,
+        admission: AdmissionProduct,
+    ) -> Mapping[str, Any] | None:
+        del context, interaction, verification
+        return admission.state.training_projection
+
+    def materialize_evidence(
+        self,
+        candidate_directory: Path,
+        context: CandidateContext,
+        interaction: StageProduct,
+        verification: StageProduct,
+        admission: AdmissionProduct,
+    ) -> Mapping[str, Any]:
+        del context, verification, admission
+        raw_directory = candidate_directory / "raw_appworld"
+        raw_sections = _copy_raw_outputs(interaction.state.raw_output_directory, raw_directory)
+        return {
+            "raw_appworld_ref": "raw_appworld",
+            "raw_appworld_sections": raw_sections,
+        }
+
+    def summarize(
+        self,
+        admissions: Sequence[AdmissionProduct],
+        candidate_records: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        del candidate_records
+        return summarize_appworld_candidates([admission.artifact for admission in admissions])
+
+    def build_selections(
+        self,
+        candidate_records: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Mapping[str, Any]]:
+        def dedup_key(record: Mapping[str, Any]) -> list[Any]:
+            return [record["task_id"], record["metadata"]["action_path_sha256"]]
+
+        def rank_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
+            metadata = record["metadata"]
+            usage = metadata["usage"]
+            total_tokens = usage.get("total_tokens")
+            return (
+                metadata["data_class"] != "A",
+                metadata["truncated"],
+                metadata["invalid_actions"],
+                metadata["duplicate_action_count"],
+                math.inf if total_tokens is None else total_tokens,
+                record["ordinal"],
+            )
+
+        policies = {}
+        for policy_id, tag, classes in (
+            ("success-only", "success-only", ["A"]),
+            ("success-plus-recovery", "success-plus-recovery", ["A", "B"]),
+        ):
+            policies[policy_id] = build_selection_manifest(
+                candidate_records,
+                policy_id=policy_id,
+                policy_identity={
+                    "benchmark": "appworld",
+                    "eligible_classes": classes,
+                    "eligibility": f"selection tag {tag!r}",
+                    "dedup_key": ["task_id", "action_path_sha256"],
+                    "ranking": [
+                        "prefer A",
+                        "prefer untruncated",
+                        "fewer invalid actions",
+                        "fewer duplicate actions",
+                        "fewer provider tokens",
+                        "lower plan ordinal",
+                    ],
+                },
+                eligible=lambda record, tag=tag: tag in record["selection_tags"],
+                dedup_key=dedup_key,
+                rank_key=rank_key,
+            )
+        return policies
+
+
 def run_appworld_data_factory(
     backend: CompletionBackend,
     *,
@@ -384,8 +578,11 @@ def run_appworld_data_factory(
     model_kwargs: Mapping[str, Any],
     candidates_per_task: int = 2,
     max_steps: int = 50,
+    candidate_seeds: Sequence[int] | None = None,
+    task_set_id: str = "initial_pilot",
+    scheduled_ordinals: Sequence[int] | None = None,
 ) -> dict[str, Any]:
-    """Execute, replay, classify, and atomically publish the fixed train pilot."""
+    """Execute a pinned AppWorld slice through the shared construction lifecycle."""
 
     for name, value in (
         ("run_id", run_id),
@@ -402,147 +599,110 @@ def run_appworld_data_factory(
         raise ValueError("max_steps must be an integer between 1 and 50")
     if not isinstance(model_kwargs, Mapping):
         raise TypeError("model_kwargs must be a mapping")
+    if task_set_id not in APPWORLD_DATA_FACTORY_TASK_SET_IDS:
+        raise ValueError(f"task_set_id must be one of {APPWORLD_DATA_FACTORY_TASK_SET_IDS}")
     sampling = _json_copy(model_kwargs, name="model_kwargs")
+    if candidate_seeds is None:
+        sampling_profiles = [copy.deepcopy(sampling) for _ in range(candidates_per_task)]
+    else:
+        if isinstance(candidate_seeds, str | bytes) or not isinstance(candidate_seeds, Sequence):
+            raise TypeError("candidate_seeds must be a sequence of integers")
+        if len(candidate_seeds) != candidates_per_task:
+            raise ValueError("candidate_seeds must contain one seed per candidate")
+        if any(isinstance(seed, bool) or not isinstance(seed, int) for seed in candidate_seeds):
+            raise TypeError("candidate_seeds must contain only integers")
+        if len(set(candidate_seeds)) != len(candidate_seeds):
+            raise ValueError("candidate_seeds must be unique")
+        sampling_profiles = []
+        for seed in candidate_seeds:
+            profile = copy.deepcopy(sampling)
+            profile["seed"] = seed
+            sampling_profiles.append(profile)
     provider = _validate_provider_identity(provider_identity)
 
-    target = Path(artifact_dir)
-    if target.exists():
-        raise FileExistsError(f"artifact directory already exists: {target}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent))
-    try:
+    if task_set_id == "initial_pilot":
+        task_ids = APPWORLD_DATA_PILOT_TASK_IDS
         dataset, dataset_manifest = load_pinned_appworld_data_pilot_dataset(appworld_root=appworld_root)
-        dataset_payload = dataset.to_dict()
-        admissions = []
-        candidate_records = []
-        for task_id in APPWORLD_DATA_PILOT_TASK_IDS:
-            for candidate_index in range(candidates_per_task):
-                candidate_slug = f"candidate-{candidate_index:02d}"
-                candidate_id = f"{run_id}:{task_id}:{candidate_slug}"
-                result = run_appworld_episode(
-                    backend,
+    else:
+        task_ids = APPWORLD_SCENARIO_CURRICULUM_TASK_IDS
+        dataset, dataset_manifest = load_pinned_appworld_scenario_curriculum_dataset(appworld_root=appworld_root)
+    plan_entries = []
+    for task_id in task_ids:
+        for candidate_index, candidate_sampling in enumerate(sampling_profiles):
+            seed = candidate_sampling.get("seed")
+            sample_id = (
+                f"seed-{seed}"
+                if isinstance(seed, int) and not isinstance(seed, bool)
+                else f"candidate-{candidate_index:02d}"
+            )
+            plan_entries.append(
+                CandidatePlanEntry(
+                    ordinal=len(plan_entries),
                     task_id=task_id,
-                    model_name=teacher_model_name,
-                    model_revision=teacher_model_revision,
-                    trajectory_id=candidate_id,
-                    appworld_root=appworld_root,
-                    appworld_source=appworld_source,
-                    experiment_name=f"lmflow-appworld-data/{run_id}/{task_id}/{candidate_slug}",
-                    model_kwargs=sampling,
-                    max_steps=max_steps,
-                    source_split="train",
+                    sample_id=sample_id,
+                    sampling=candidate_sampling,
                 )
-                replay = replay_appworld_episode(
-                    result.artifact,
-                    appworld_root=appworld_root,
-                    experiment_name=f"lmflow-appworld-data-replay/{run_id}/{task_id}/{candidate_slug}",
-                )
-                finalized = finalize_appworld_candidate(
-                    result,
-                    replay,
-                    cost_usd=_candidate_cost_usd(result.artifact, provider),
-                )
-                candidate_directory = staging / "candidates" / task_id / candidate_slug
-                artifact_path = candidate_directory / "trajectory.json"
-                replay_path = candidate_directory / "replay.json"
-                admission_path = candidate_directory / "admission.json"
-                _new_json_file(artifact_path, result.artifact)
-                _new_json_file(replay_path, replay)
-                _new_json_file(admission_path, finalized.admission)
-                projection_ref = None
-                projection_sha256 = None
-                if finalized.training_projection is not None:
-                    projection_path = candidate_directory / "conversation.json"
-                    _new_json_file(projection_path, finalized.training_projection)
-                    projection_ref = projection_path.relative_to(staging).as_posix()
-                    projection_sha256 = _sha256_file(projection_path)
-                raw_directory = candidate_directory / "raw_appworld"
-                raw_sections = _copy_raw_outputs(result.raw_output_directory, raw_directory)
-                admissions.append(finalized.admission)
-                candidate_records.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "task_id": task_id,
-                        "candidate_index": candidate_index,
-                        "data_class": finalized.admission["data_class"],
-                        "admitted_for_sft": finalized.admission["admitted_for_sft"],
-                        "trajectory_ref": artifact_path.relative_to(staging).as_posix(),
-                        "trajectory_file_sha256": _sha256_file(artifact_path),
-                        "trajectory_manifest_sha256": result.artifact["manifest_sha256"],
-                        "replay_ref": replay_path.relative_to(staging).as_posix(),
-                        "replay_file_sha256": _sha256_file(replay_path),
-                        "replay_manifest_sha256": replay["manifest_sha256"],
-                        "admission_ref": admission_path.relative_to(staging).as_posix(),
-                        "admission_file_sha256": _sha256_file(admission_path),
-                        "admission_manifest_sha256": finalized.admission["manifest_sha256"],
-                        "training_projection_ref": projection_ref,
-                        "training_projection_sha256": projection_sha256,
-                        "raw_appworld_ref": raw_directory.relative_to(staging).as_posix(),
-                        "raw_appworld_sections": raw_sections,
-                    }
-                )
-
-        factory_manifest = with_manifest_digest(
-            {
-                "format_version": APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION,
-                "run_id": run_id,
-                "created_at": datetime.now(UTC).isoformat(),
-                "dataset_manifest_ref": "dataset_manifest.json",
-                "dataset_manifest_sha256": dataset_manifest["manifest_sha256"],
-                "dataset_projection_ref": "dataset.json",
-                "dataset_projection_sha256": canonical_json_sha256(dataset_payload),
-                "task_ids": list(APPWORLD_DATA_PILOT_TASK_IDS),
-                "candidates_per_task": candidates_per_task,
-                "candidate_count": len(candidate_records),
-                "teacher": {
-                    "model_name": teacher_model_name,
-                    "model_revision": teacher_model_revision,
-                    "provider": provider,
-                    "sampling": sampling,
-                },
-                "appworld_revision": APPWORLD_REVISION,
-                "execution": {
-                    "serial": True,
-                    "fresh_reset_per_candidate": True,
-                    "fresh_reset_replay_required": True,
-                    "official_evaluator_required": True,
-                    "max_steps": max_steps,
-                },
-                "projection_policy": {
-                    "A": "success-only and success-plus-recovery SFT arms",
-                    "B": "success-plus-recovery arm with invalid assistant actions loss-masked",
-                    "C": "sealed partial signal only; no SFT projection in this slice",
-                    "D": "no SFT projection; preference requires a verified improved pair",
-                    "E": "diagnostics only",
-                },
-                "protected_artifacts_outside_git": True,
-                "hidden_verifier_material_in_dataset_or_conversation": False,
-            }
-        )
-        report = with_manifest_digest(
-            {
-                "format_version": APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION,
-                "run_id": run_id,
-                "factory_manifest_ref": "factory_manifest.json",
-                "factory_manifest_sha256": factory_manifest["manifest_sha256"],
-                "candidate_records": candidate_records,
-                "summary": summarize_appworld_candidates(admissions),
-            }
-        )
-        _new_json_file(staging / "dataset.json", dataset_payload)
-        _new_json_file(staging / "dataset_manifest.json", dataset_manifest)
-        _new_json_file(staging / "factory_manifest.json", factory_manifest)
-        _new_json_file(staging / "report.json", report)
-        staging.rename(target)
-        return report
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+            )
+    candidate_plan = build_candidate_plan(
+        plan_entries,
+        task_set_id=task_set_id,
+        task_dataset_manifest_sha256=dataset_manifest["manifest_sha256"],
+    )
+    adapter = _AppWorldDataConstructionAdapter(
+        backend,
+        run_id=run_id,
+        appworld_root=appworld_root,
+        appworld_source=appworld_source,
+        teacher_model_name=teacher_model_name,
+        teacher_model_revision=teacher_model_revision,
+        provider_identity=provider,
+        max_steps=max_steps,
+    )
+    return run_data_construction_attempt(
+        adapter,
+        artifact_dir=artifact_dir,
+        attempt_id=run_id,
+        task_dataset=dataset.to_dict(),
+        task_dataset_manifest=dataset_manifest,
+        candidate_plan=candidate_plan,
+        scheduled_ordinals=scheduled_ordinals,
+        run_identity={
+            "adapter_format_version": APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION,
+            "created_at": datetime.now(UTC).isoformat(),
+            "task_set_id": task_set_id,
+            "task_ids": list(task_ids),
+            "teacher": {
+                "model_name": teacher_model_name,
+                "model_revision": teacher_model_revision,
+                "provider": provider,
+                "sampling": sampling,
+                "candidate_sampling": sampling_profiles,
+            },
+            "appworld_revision": APPWORLD_REVISION,
+            "execution": {
+                "serial": True,
+                "fresh_reset_per_candidate": True,
+                "fresh_reset_replay_required": True,
+                "official_evaluator_required": True,
+                "max_steps": max_steps,
+            },
+            "projection_policy": {
+                "A": "success-only and success-plus-recovery SFT arms",
+                "B": "success-plus-recovery arm with invalid assistant actions loss-masked",
+                "C": "sealed partial signal only; no SFT projection in this slice",
+                "D": "no SFT projection; preference requires a verified improved pair",
+                "E": "diagnostics only",
+            },
+            "protected_artifacts_outside_git": True,
+            "hidden_verifier_material_in_dataset_or_conversation": False,
+        },
+    )
 
 
 __all__ = [
     "APPWORLD_DATA_CANDIDATE_FORMAT_VERSION",
     "APPWORLD_DATA_CLASSES",
+    "APPWORLD_DATA_FACTORY_TASK_SET_IDS",
     "APPWORLD_DATA_FACTORY_RUN_FORMAT_VERSION",
     "AppWorldFinalizedCandidate",
     "finalize_appworld_candidate",
