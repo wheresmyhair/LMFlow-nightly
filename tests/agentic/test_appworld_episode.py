@@ -375,6 +375,7 @@ def test_token_native_appworld_fixture_preserves_policy_and_observation_tokens(m
         backend,
         request_id_prefix="fixture-policy-task-rollout-0",
         prompt_token_ids_renderer=render_prompt_token_ids,
+        max_model_len=32768,
         evidence_sink=lambda stage, call_index, evidence: stages.append((stage, call_index, evidence)),
     )
     result = run_appworld_episode(
@@ -623,6 +624,7 @@ def test_token_native_recorder_emits_raw_evidence_before_token_assertion():
         backend,
         request_id_prefix="invalid-token-evidence",
         prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        max_model_len=32768,
         evidence_sink=lambda stage, call_index, evidence: stages.append(stage),
     )
 
@@ -631,8 +633,87 @@ def test_token_native_recorder_emits_raw_evidence_before_token_assertion():
             messages=[{"role": "user", "content": "task"}],
             tools=[],
             model_name="model",
-            model_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+            model_kwargs={
+                "max_completion_tokens": 16,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
         )
 
     assert stages == ["request_intent", "raw_response", "normalized_response", "token_evidence_error"]
     assert recorder.calls == ()
+
+
+def test_token_native_recorder_caps_output_before_sending_request():
+    backend = FakeTokenNativeBackend()
+    backend.prompts[0] = tuple(range(9))
+    stages = []
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="context-cap",
+        prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        max_model_len=10,
+        evidence_sink=lambda stage, call_index, evidence: stages.append((stage, evidence)),
+    )
+
+    recorder.complete(
+        messages=[{"role": "user", "content": "task"}],
+        tools=[],
+        model_name="model",
+        model_kwargs={
+            "max_completion_tokens": 3,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        },
+    )
+
+    assert backend.calls[0]["model_kwargs"]["max_completion_tokens"] == 1
+    request_intent = stages[0][1]
+    assert request_intent["request_will_be_sent"] is True
+    assert request_intent["context_budget"] == {
+        "policy_id": "lmflow.appworld-dynamic-output-cap/v1",
+        "max_model_len": 10,
+        "prompt_tokens": 9,
+        "budget_field": "max_completion_tokens",
+        "requested_output_tokens": 3,
+        "available_output_tokens": 1,
+        "effective_output_tokens": 1,
+        "cap_applied": True,
+        "history_truncated": False,
+        "request_will_be_sent": True,
+    }
+    assert stages[-1][1]["context_budget"] == request_intent["context_budget"]
+    assert recorder.context_budgets == (request_intent["context_budget"],)
+
+
+def test_token_native_recorder_rejects_exhausted_context_before_backend_call():
+    backend = FakeTokenNativeBackend()
+    backend.prompts[0] = tuple(range(10))
+    stages = []
+    recorder = AppWorldTokenNativeCompletionRecorder(
+        backend,
+        request_id_prefix="context-exhausted",
+        prompt_token_ids_renderer=lambda messages, model_kwargs: backend.prompts[0],
+        max_model_len=10,
+        evidence_sink=lambda stage, call_index, evidence: stages.append((stage, evidence)),
+    )
+
+    with pytest.raises(ValueError, match="leaves no completion budget"):
+        recorder.complete(
+            messages=[{"role": "user", "content": "task"}],
+            tools=[],
+            model_name="model",
+            model_kwargs={
+                "max_completion_tokens": 3,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        )
+
+    assert backend.calls == []
+    assert [stage for stage, _ in stages] == [
+        "request_intent",
+        "context_budget_error",
+        "request_termination",
+    ]
+    assert stages[0][1]["request_will_be_sent"] is False
+    assert stages[0][1]["context_budget"]["effective_output_tokens"] == 0
+    assert stages[-1][1]["status"] == "rejected_before_request"
+    assert recorder.context_budgets[0]["request_will_be_sent"] is False
