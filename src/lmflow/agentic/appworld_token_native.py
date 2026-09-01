@@ -20,6 +20,7 @@ from lmflow.agentic.vllm_token_native import (
 
 APPWORLD_TOKEN_NATIVE_AUDIT_FORMAT_VERSION = "lmflow.appworld-token-native-audit/v1"
 APPWORLD_QWEN3_REASONING_REPLAY_POLICY_ID = "lmflow.appworld-qwen3-reasoning-replay/v2"
+APPWORLD_CONTEXT_BUDGET_POLICY_ID = "lmflow.appworld-dynamic-output-cap/v1"
 
 _QWEN3_LAST_QUERY_CONDITION = (
     "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
@@ -33,6 +34,8 @@ _APPWORLD_HISTORICAL_REASONING_CONDITION = (
 
 PromptTokenIdsRenderer = Callable[[list[dict[str, Any]], Mapping[str, Any]], Sequence[int]]
 EvidenceSink = Callable[[str, int, Mapping[str, Any]], None]
+
+_OUTPUT_TOKEN_BUDGET_FIELDS = ("max_completion_tokens", "max_tokens")
 
 
 def _json_copy(value: Any, *, name: str) -> Any:
@@ -105,6 +108,38 @@ def _prefix_difference(expected_prefix: Sequence[int], actual: Sequence[int]) ->
             "kind": "actual_prompt_shorter",
         }
     return None
+
+
+def _apply_context_budget(
+    request_kwargs: dict[str, Any],
+    *,
+    prompt_tokens: int,
+    max_model_len: int,
+) -> dict[str, Any]:
+    fields = [field for field in _OUTPUT_TOKEN_BUDGET_FIELDS if field in request_kwargs]
+    if len(fields) != 1:
+        raise ValueError("AppWorld token-native requests must contain exactly one output-token budget field")
+    field = fields[0]
+    requested = request_kwargs[field]
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
+        raise ValueError(f"model_kwargs.{field} must be a positive integer")
+    available = max_model_len - prompt_tokens
+    effective = min(requested, max(available, 0))
+    decision = {
+        "policy_id": APPWORLD_CONTEXT_BUDGET_POLICY_ID,
+        "max_model_len": max_model_len,
+        "prompt_tokens": prompt_tokens,
+        "budget_field": field,
+        "requested_output_tokens": requested,
+        "available_output_tokens": max(available, 0),
+        "effective_output_tokens": effective,
+        "cap_applied": effective < requested,
+        "history_truncated": False,
+        "request_will_be_sent": effective > 0,
+    }
+    if effective > 0:
+        request_kwargs[field] = effective
+    return decision
 
 
 def qwen3_appworld_replay_chat_template(tokenizer: Any) -> str:
@@ -310,7 +345,7 @@ def assemble_verified_appworld_token_sequence(
 
 
 class AppWorldTokenNativeCompletionRecorder:
-    """Add vLLM token metadata to AppWorld calls and retain auditable evidence."""
+    """Add vLLM token metadata and enforce an auditable AppWorld context budget."""
 
     def __init__(
         self,
@@ -318,21 +353,26 @@ class AppWorldTokenNativeCompletionRecorder:
         *,
         request_id_prefix: str,
         prompt_token_ids_renderer: PromptTokenIdsRenderer,
+        max_model_len: int,
         evidence_sink: EvidenceSink | None = None,
     ) -> None:
         if not isinstance(request_id_prefix, str) or not request_id_prefix.strip():
             raise ValueError("request_id_prefix must be a non-empty string")
         if not callable(prompt_token_ids_renderer):
             raise TypeError("prompt_token_ids_renderer must be callable")
+        if isinstance(max_model_len, bool) or not isinstance(max_model_len, int) or max_model_len <= 0:
+            raise ValueError("max_model_len must be a positive integer")
         if evidence_sink is not None and not callable(evidence_sink):
             raise TypeError("evidence_sink must be callable")
         self._backend = backend
         self._request_id_prefix = request_id_prefix
         self._prompt_token_ids_renderer = prompt_token_ids_renderer
+        self._max_model_len = max_model_len
         self._evidence_sink = evidence_sink
         self._attempt_count = 0
         self._calls: list[VLLMChatTokenData] = []
         self._expected_prompts: list[tuple[int, ...]] = []
+        self._context_budgets: list[dict[str, Any]] = []
 
     @property
     def calls(self) -> tuple[VLLMChatTokenData, ...]:
@@ -341,6 +381,10 @@ class AppWorldTokenNativeCompletionRecorder:
     @property
     def expected_prompt_token_ids(self) -> tuple[tuple[int, ...], ...]:
         return tuple(self._expected_prompts)
+
+    @property
+    def context_budgets(self) -> tuple[dict[str, Any], ...]:
+        return tuple(copy.deepcopy(self._context_budgets))
 
     def _emit(self, stage: str, call_index: int, evidence: Mapping[str, Any]) -> None:
         if self._evidence_sink is not None:
@@ -362,6 +406,13 @@ class AppWorldTokenNativeCompletionRecorder:
             name=f"expected prompt for AppWorld call {call_index}",
         )
         request_kwargs = vllm_token_native_model_kwargs(model_kwargs, request_id=request_id)
+        context_budget = _apply_context_budget(
+            request_kwargs,
+            prompt_tokens=len(expected_prompt),
+            max_model_len=self._max_model_len,
+        )
+        self._context_budgets.append(context_budget)
+        request_will_be_sent = context_budget["effective_output_tokens"] > 0
         self._emit(
             "request_intent",
             call_index,
@@ -373,8 +424,38 @@ class AppWorldTokenNativeCompletionRecorder:
                 "model_kwargs": request_kwargs,
                 "model_kwargs_sha256": canonical_json_sha256(request_kwargs),
                 "expected_prompt_tokens": len(expected_prompt),
+                "context_budget": context_budget,
+                "request_will_be_sent": request_will_be_sent,
             },
         )
+        if not request_will_be_sent:
+            message = (
+                f"AppWorld prompt uses {len(expected_prompt)} tokens and leaves no completion "
+                f"budget within max_model_len={self._max_model_len}"
+            )
+            self._emit(
+                "context_budget_error",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "type": "ValueError",
+                    "message": message,
+                    "status": "rejected_before_request",
+                    "context_budget": context_budget,
+                },
+            )
+            self._emit(
+                "request_termination",
+                call_index,
+                {
+                    "request_id": request_id,
+                    "response_id": None,
+                    "finish_reason": "context_budget_exhausted",
+                    "status": "rejected_before_request",
+                    "context_budget": context_budget,
+                },
+            )
+            raise ValueError(message)
         response = self._backend.complete(
             messages=messages,
             tools=tools,
@@ -434,6 +515,7 @@ class AppWorldTokenNativeCompletionRecorder:
                 "response_id": token_call.response_id,
                 "finish_reason": token_call.finish_reason,
                 "status": "sealed",
+                "context_budget": context_budget,
             },
         )
         return response
@@ -447,6 +529,7 @@ class AppWorldTokenNativeCompletionRecorder:
 
 
 __all__ = [
+    "APPWORLD_CONTEXT_BUDGET_POLICY_ID",
     "APPWORLD_QWEN3_REASONING_REPLAY_POLICY_ID",
     "APPWORLD_TOKEN_NATIVE_AUDIT_FORMAT_VERSION",
     "AppWorldTokenNativeCompletionRecorder",
