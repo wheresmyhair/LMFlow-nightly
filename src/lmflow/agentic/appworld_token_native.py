@@ -19,12 +19,17 @@ from lmflow.agentic.vllm_token_native import (
 )
 
 APPWORLD_TOKEN_NATIVE_AUDIT_FORMAT_VERSION = "lmflow.appworld-token-native-audit/v1"
-APPWORLD_QWEN3_REASONING_REPLAY_POLICY_ID = "lmflow.appworld-qwen3-reasoning-replay/v1"
+APPWORLD_QWEN3_REASONING_REPLAY_POLICY_ID = "lmflow.appworld-qwen3-reasoning-replay/v2"
 
 _QWEN3_LAST_QUERY_CONDITION = (
     "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
 )
 _APPWORLD_LAST_QUERY_CONDITION = _QWEN3_LAST_QUERY_CONDITION + (" and not(message.content.startswith('Output:\\n'))")
+_QWEN3_HISTORICAL_REASONING_CONDITION = "if loop.last or (not loop.last and reasoning_content)"
+_APPWORLD_HISTORICAL_REASONING_CONDITION = (
+    "if loop.last or (not loop.last and "
+    "(reasoning_content or (enable_thinking is defined and enable_thinking is false)))"
+)
 
 PromptTokenIdsRenderer = Callable[[list[dict[str, Any]], Mapping[str, Any]], Sequence[int]]
 EvidenceSink = Callable[[str, int, Mapping[str, Any]], None]
@@ -103,14 +108,18 @@ def _prefix_difference(expected_prefix: Sequence[int], actual: Sequence[int]) ->
 
 
 def qwen3_appworld_replay_chat_template(tokenizer: Any) -> str:
-    """Keep sampled Qwen3 reasoning across AppWorld ``Output:`` observations.
+    """Keep Qwen3 sampled prefixes across AppWorld ``Output:`` observations.
 
     Qwen3's stock template treats every plain ``user`` message as a new query and
     therefore drops earlier ``reasoning_content``. The pinned AppWorld ReAct-code
     scaffold represents execution observations as ``user`` messages whose content
     begins with ``Output:``. This benchmark-local derivation keeps those messages
     model-visible exactly as the official scaffold specifies while excluding them
-    from Qwen3's last-query boundary.
+    from Qwen3's last-query boundary. With thinking disabled, Qwen3 also appends an
+    empty ``<think>...</think>`` prefill to the generation prompt but normally
+    removes it when that assistant turn becomes history. Retaining the same prefill
+    for historical assistant turns makes the next prompt extend the exact sampled
+    prefix instead of deleting deterministic conditioning tokens.
     """
 
     source_template = getattr(tokenizer, "chat_template", None)
@@ -118,7 +127,12 @@ def qwen3_appworld_replay_chat_template(tokenizer: Any) -> str:
         raise ValueError("Qwen3 tokenizer must contain a non-empty chat template")
     if source_template.count(_QWEN3_LAST_QUERY_CONDITION) != 1:
         raise ValueError("Qwen3 chat template last-query boundary is unsupported")
-    return source_template.replace(_QWEN3_LAST_QUERY_CONDITION, _APPWORLD_LAST_QUERY_CONDITION)
+    if source_template.count(_QWEN3_HISTORICAL_REASONING_CONDITION) != 1:
+        raise ValueError("Qwen3 chat template historical reasoning boundary is unsupported")
+    return source_template.replace(_QWEN3_LAST_QUERY_CONDITION, _APPWORLD_LAST_QUERY_CONDITION).replace(
+        _QWEN3_HISTORICAL_REASONING_CONDITION,
+        _APPWORLD_HISTORICAL_REASONING_CONDITION,
+    )
 
 
 def qwen3_appworld_replay_chat_template_identity(tokenizer: Any) -> dict[str, str]:

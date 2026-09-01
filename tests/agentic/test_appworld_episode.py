@@ -466,7 +466,8 @@ def test_qwen3_prompt_renderer_preserves_messages_and_thinking_identity():
             self.chat_template = (
                 "{% if message.role == 'user' and "
                 "not(message.content.startswith('<tool_response>') "
-                "and message.content.endswith('</tool_response>')) %}kept{% endif %}"
+                "and message.content.endswith('</tool_response>')) %}kept{% endif %} "
+                "{% if loop.last or (not loop.last and reasoning_content) %}assistant{% endif %}"
             )
 
         def apply_chat_template(self, messages, **kwargs):
@@ -495,26 +496,37 @@ def test_qwen3_prompt_renderer_preserves_messages_and_thinking_identity():
         "chat_template": qwen3_appworld_replay_chat_template(tokenizer),
     }
     assert "not(message.content.startswith('Output:\\n'))" in tokenizer.arguments["chat_template"]
+    assert (
+        "reasoning_content or (enable_thinking is defined and enable_thinking is false)"
+        in tokenizer.arguments["chat_template"]
+    )
 
 
 def test_qwen3_replay_template_identity_is_fail_closed_and_stable():
     condition = (
         "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
     )
-    tokenizer = SimpleNamespace(chat_template=f"prefix {condition} suffix")
+    historical = "if loop.last or (not loop.last and reasoning_content)"
+    tokenizer = SimpleNamespace(chat_template=f"prefix {condition} middle {historical} suffix")
 
     replay_template = qwen3_appworld_replay_chat_template(tokenizer)
     identity = qwen3_appworld_replay_chat_template_identity(tokenizer)
 
-    assert replay_template == f"prefix {condition} and not(message.content.startswith('Output:\\n')) suffix"
+    assert replay_template == (
+        f"prefix {condition} and not(message.content.startswith('Output:\\n')) middle "
+        "if loop.last or (not loop.last and "
+        "(reasoning_content or (enable_thinking is defined and enable_thinking is false))) suffix"
+    )
     assert identity == {
-        "policy_id": "lmflow.appworld-qwen3-reasoning-replay/v1",
-        "source_chat_template_sha256": "6fb78078b691e35c53f496f29ef66ef335648f9f2337a3d4786c1b9199804b9d",
-        "replay_chat_template_sha256": "c88fbc555771d89ee547e956f371a8cad6cb8292fec685dae1ca37c8ccee4ec7",
+        "policy_id": "lmflow.appworld-qwen3-reasoning-replay/v2",
+        "source_chat_template_sha256": "f46fa44f6f55681061f774239bbeffeb5a1f1ae1ae486594ea5fde531700adbf",
+        "replay_chat_template_sha256": "a0a1bc73eef49db0f25169a05d81fa27e9b84a1c4670704b21b9b48b04862e09",
     }
 
     with pytest.raises(ValueError, match="last-query boundary is unsupported"):
         qwen3_appworld_replay_chat_template(SimpleNamespace(chat_template="unrecognized"))
+    with pytest.raises(ValueError, match="historical reasoning boundary is unsupported"):
+        qwen3_appworld_replay_chat_template(SimpleNamespace(chat_template=f"prefix {condition} suffix"))
     with pytest.raises(ValueError, match="non-empty chat template"):
         qwen3_appworld_replay_chat_template(SimpleNamespace(chat_template=None))
 
@@ -523,10 +535,11 @@ def test_qwen3_replay_policy_preserves_length_stopped_reasoning_before_output_ob
     condition = (
         "and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>'))"
     )
+    historical = "if loop.last or (not loop.last and reasoning_content)"
 
     class MinimalQwen3Tokenizer:
         def __init__(self):
-            self.chat_template = f"prefix {condition} suffix"
+            self.chat_template = f"prefix {condition} middle {historical} suffix"
 
         def apply_chat_template(self, messages, *, chat_template, add_generation_prompt, **kwargs):
             preserve_output_reasoning = "not(message.content.startswith('Output:\\n'))" in chat_template
