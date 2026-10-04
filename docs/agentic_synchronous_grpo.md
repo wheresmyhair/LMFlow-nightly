@@ -5,6 +5,10 @@ uses one TRL `GRPOTrainer.train()` call for the whole run. TRL owns accumulation
 gradient checkpointing, optimizer, scheduler and checkpoints. A fresh rollout
 batch is requested after each optimizer update. No training loop is reimplemented.
 
+For a real multi-step environment producer, see [AppWorld GRPO](agentic_appworld_grpo.md)
+and `examples/appworld_grpo.py`. It reuses this lifecycle with fresh reset/replay,
+official scalar rewards and per-call token evidence; serving remains caller-owned.
+
 Run the offline CPU example in the Agentic environment:
 
 ```bash

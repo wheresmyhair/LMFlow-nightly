@@ -29,8 +29,8 @@ from lmflow.agentic.gsm8k_evaluation import (
     evaluate_arithmetic_expression,
 )
 from lmflow.agentic.vllm_token_native import (
-    AssembledTokenSequence,
     VLLMChatTokenData,
+    _pack_token_sequences,
     assemble_vllm_chat_token_data,
     extract_vllm_chat_token_data,
     vllm_token_native_model_kwargs,
@@ -501,29 +501,8 @@ class GSM8KTokenNativeRollout:
             with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
                 rows = list(executor.map(lambda job: self._run_one(**job), jobs))
 
-        sequences: list[AssembledTokenSequence] = [row["sequence"] for row in rows]
-        maximum_length = max(sequence.input_ids.shape[0] for sequence in sequences)
-        input_ids = torch.full((len(rows), maximum_length), self.pad_token_id, dtype=torch.long)
-        attention_mask = torch.zeros((len(rows), maximum_length), dtype=torch.long)
-        loss_mask = torch.zeros((len(rows), maximum_length), dtype=torch.float32)
-        old_log_probs = torch.zeros((len(rows), maximum_length), dtype=torch.float32)
-        prompt_lengths = torch.zeros(len(rows), dtype=torch.long)
-        for index, sequence in enumerate(sequences):
-            length = sequence.input_ids.shape[0]
-            input_ids[index, :length] = sequence.input_ids
-            attention_mask[index, :length] = sequence.attention_mask
-            loss_mask[index, :length] = sequence.loss_mask
-            old_log_probs[index, :length] = sequence.old_log_probs
-            prompt_lengths[index] = sequence.call_spans[0]["output_start"]
-
         return DataProto.from_dict(
-            tensors={
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "loss_mask": loss_mask,
-                "old_log_probs": old_log_probs,
-                "prompt_lengths": prompt_lengths,
-            },
+            tensors=_pack_token_sequences([row["sequence"] for row in rows], pad_token_id=self.pad_token_id),
             non_tensors={
                 "task_ids": np.asarray(task_ids).copy(),
                 "group_ids": np.asarray(group_ids).copy(),

@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,27 @@ _REFERENCE_FILES = {
 _FULL_CODE_PATTERN = re.compile(r"```python\n(.*?)```", flags=re.DOTALL)
 _PARTIAL_CODE_PATTERN = re.compile(r".*```python\n(.*)", flags=re.DOTALL)
 _ROLE_PATTERN = re.compile(r"(USER|ASSISTANT|SYSTEM):\n", flags=re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class AppWorldPrompt:
+    """Explicit experiment prompt; the reference parser and projector are unchanged."""
+
+    text: str
+    identity: str
+    sha256: str
+
+    def __post_init__(self):
+        if not self.identity or not isinstance(self.identity, str):
+            raise ValueError("prompt identity must be a non-empty string")
+        if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.sha256:
+            raise ValueError("AppWorld prompt digest mismatch")
+        text_to_messages(self.text)
+
+    @classmethod
+    def from_file(cls, path: str | Path, *, identity: str, sha256: str) -> AppWorldPrompt:
+        # Preserve exact UTF-8 bytes, including line endings, for prompt identity.
+        return cls(Path(path).read_bytes().decode("utf-8"), identity, sha256)
 
 
 def _sha256_file(path: Path) -> str:

@@ -45,6 +45,38 @@ class AssembledTokenSequence:
     call_spans: tuple[dict[str, Any], ...]
 
 
+def _pack_token_sequences(
+    sequences: Sequence[AssembledTokenSequence],
+    *,
+    pad_token_id: int,
+    float_dtype: torch.dtype = torch.float32,
+) -> dict[str, torch.Tensor]:
+    """Right-pad assembled rows without choosing masks or changing call anchors.
+
+    Internal producer helper: callers still own rewards, origin masks and metadata.
+    ``float_dtype`` retains each producer's existing loss/logprob output dtype.
+    Sequence validation belongs to the assembler and the training bridge.
+    """
+    if not sequences:
+        raise ValueError("cannot pack an empty token sequence batch")
+    tensors = {}
+    for name, dtype in (
+        ("input_ids", torch.long),
+        ("attention_mask", torch.long),
+        ("loss_mask", float_dtype),
+        ("old_log_probs", float_dtype),
+    ):
+        tensors[name] = torch.nn.utils.rnn.pad_sequence(
+            [getattr(sequence, name).to(dtype=dtype) for sequence in sequences],
+            batch_first=True,
+            padding_value=pad_token_id if name == "input_ids" else 0,
+        )
+    tensors["prompt_lengths"] = torch.tensor(
+        [sequence.call_spans[0]["output_start"] for sequence in sequences], dtype=torch.long
+    )
+    return tensors
+
+
 def vllm_token_native_model_kwargs(
     model_kwargs: Mapping[str, Any],
     *,
