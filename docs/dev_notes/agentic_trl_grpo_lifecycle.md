@@ -12,6 +12,11 @@ The bridge is backend-internal and versioned. It does not define a public
 LMFlow's pure GRPO objective remain correctness references for differential
 tests.
 
+For multiple updates, see [continuous synchronous GRPO](../agentic_synchronous_grpo.md).
+It reuses the sealed input contract below and requests a fresh complete batch
+under each newly published policy within one native Trainer lifecycle. Each
+sealed batch remains single-use.
+
 ## Sealed input contract
 
 The one-step bridge consumes an existing `DataProto` with:
@@ -21,7 +26,7 @@ The one-step bridge consumes an existing `DataProto` with:
 | `batch` | `input_ids` | Actual prompt and sampled output token IDs, right padded. |
 | `batch` | `attention_mask` | Binary active-token mask. |
 | `batch` | `prompt_lengths` | Per-rollout boundary between conditioning context and the optimized completion. |
-| `batch` | `loss_mask` | Binary policy/environment mask; prompt, tool observations, and padding are zero. |
+| `batch` | `loss_mask` | Binary optimization-selection mask; prompt, tool observations, padding, and excluded model tokens are zero. |
 | `batch` | `old_log_probs` | Actual sampled-policy token log-probabilities aligned with `input_ids`. |
 | `batch` | `rewards` | One audited scalar training reward per rollout. |
 | `non_tensor_batch` | `task_ids` | Stable task identity. |
@@ -29,6 +34,9 @@ The one-step bridge consumes an existing `DataProto` with:
 | `non_tensor_batch` | `rollout_ids` | Unique rollout identity. |
 | `meta_info` | `policy_version` | Policy/checkpoint version that produced the sealed batch. |
 | `meta_info` | `logprob_provenance.behavior` | Source and policy version for sampled log-probabilities. |
+
+Raw per-call artifacts retain token origin, including model tokens excluded from
+optimization and tokens supplied by the environment or transport.
 
 Every group has one task identity and the same number of rollouts. Multi-turn
 rollouts may have different conditioning token prefixes within a group because
@@ -38,9 +46,12 @@ actual conditioning prefix remains sealed and is passed to TRL unchanged.
 
 Validation fails closed on incomplete groups, duplicate rollout IDs, stale
 policy provenance, non-finite values, non-binary masks, non-contiguous padding,
-invalid prompt boundaries, selected prompt/padding tokens, or a rollout with no
-trainable policy token. The rollout and reward hooks are single-use so one
-sealed batch cannot be consumed twice accidentally.
+invalid prompt boundaries, selected prompt/padding tokens, or an entire batch
+with no selected completion token. An individual zero-mask completion retains
+its reward and membership in group statistics while contributing zero policy
+loss. Constant group rewards are valid and can produce zero advantages. The
+rollout and reward hooks are single-use so one sealed batch cannot be consumed
+twice accidentally.
 
 ## Log-probability provenance
 
@@ -71,7 +82,7 @@ or private-output drift stops training before an optimizer step.
 
 ## Supported recipe
 
-The first product slice intentionally supports one correctness recipe:
+The one-step builder supports the following recipe:
 
 - one process and one optimizer step;
 - one sealed generation batch with `per_device_train_batch_size=1` and gradient
@@ -96,7 +107,7 @@ require separate contract evidence before they can be enabled.
 ## Verification boundary
 
 The locked reference test runs the standard Trainer lifecycle with a tiny PEFT
-model. It checks exact completion IDs, policy/environment masks, audited
+model. It checks exact completion IDs, optimization-selection masks, audited
 rewards, group advantages, sampled and trainer-old log-probabilities, loss,
 final accumulated gradients, one optimizer/scheduler step, active gradient
 checkpointing, LoRA-only parameter changes, and frozen base parameters.

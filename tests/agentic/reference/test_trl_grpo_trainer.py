@@ -362,3 +362,226 @@ def test_builder_rejects_non_grpo_config_before_trainer_construction():
             sealed_rollouts=sealed_rollouts,
             old_logprobs_source="behavior",
         )
+
+
+@pytest.mark.parametrize("zero_mask_member", [False, True])
+def test_continuous_train_samples_updated_policy_and_keeps_native_optimizer(tmp_path, zero_mask_member):
+    from lmflow.agentic.contracts import TaskSpec
+    from lmflow.agentic.trl_grpo_loop import build_synchronous_trl_grpo_trainer
+
+    lora_config_class, *_, callback_class, _, _ = _load_backend()
+    torch.manual_seed(43)
+    tokenizer, model = _make_tokenizer_and_model()
+    args = _make_args(tmp_path)
+    args.max_steps = 2
+    args.num_generations = 4
+    args.max_completion_length = 5
+    args.lr_scheduler_type = "linear"
+    publications, sampled, consumed, updates = [], [], [], []
+
+    def digest(model):
+        value = hashlib.sha256()
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                value.update(name.encode())
+                value.update(parameter.detach().cpu().contiguous().numpy().tobytes())
+        return value.hexdigest()
+
+    def publish(trainer, version):
+        receipt = dict(
+            policy_version=version,
+            global_step=trainer.state.global_step,
+            weight_digest=digest(trainer.model),
+            source="live-hf-policy",
+        )
+        publications.append(receipt)
+        return receipt
+
+    def generate(model, prefix):
+        ids = torch.tensor([prefix])
+        output = model.generate(
+            input_ids=ids,
+            attention_mask=torch.ones_like(ids),
+            do_sample=True,
+            max_new_tokens=2,
+            min_new_tokens=2,
+            top_k=0,
+            top_p=1.0,
+            temperature=1.0,
+            eos_token_id=None,
+            pad_token_id=0,
+            use_cache=False,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+        tokens = output.sequences[0, len(prefix) :].tolist()
+        probabilities = [
+            float(score[0].log_softmax(-1)[token]) for score, token in zip(output.scores, tokens, strict=True)
+        ]
+        return tokens, probabilities
+
+    def rollout(requests, trainer):
+        live = trainer.accelerator.unwrap_model(trainer.model)
+        live.eval()
+        before = digest(live)
+        rows, probabilities, rewards = [], [], []
+        with torch.no_grad():
+            for _ in range(len(requests)):
+                first, lp1 = generate(live, [3, 4])
+                # An environment observation remains conditioning, with zero loss.
+                second, lp2 = generate(live, [3, 4] + first + [7])
+                rows.append([3, 4] + first + [7] + second)
+                probabilities.append([0.0, 0.0] + lp1 + [0.0] + lp2)
+                rewards.append(float(second[-1] % 2))
+        masks = [[0, 0, 1, 1, 0, 1, 1] for _ in rows]
+        if zero_mask_member:
+            masks[0] = [0] * 7
+            rewards = [0.0, 1.0, 1.0, 1.0]
+        sampled.append(
+            dict(
+                step=trainer.state.global_step,
+                digest=before,
+                optimizer=id(trainer.optimizer),
+                scheduler=id(trainer.lr_scheduler),
+                ids=copy.deepcopy(rows),
+                logprobs=copy.deepcopy(probabilities),
+                masks=copy.deepcopy(masks),
+            )
+        )
+        return DataProto.from_dict(
+            tensors=dict(
+                input_ids=torch.tensor(rows),
+                attention_mask=torch.ones(4, 7, dtype=torch.long),
+                loss_mask=torch.tensor(masks),
+                old_log_probs=torch.tensor(probabilities),
+                prompt_lengths=torch.tensor([2] * 4),
+                rewards=torch.tensor(rewards),
+            ),
+            non_tensors=copy.deepcopy(requests.non_tensor_batch),
+            meta_info={
+                **copy.deepcopy(requests.meta_info),
+                "logprob_provenance": {
+                    "behavior": dict(
+                        source="hf.generate.output_scores", policy_version=requests.meta_info["policy_version"]
+                    )
+                },
+            },
+        )
+
+    class Audit(callback_class):
+        def on_step_end(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
+            updates.append(
+                dict(
+                    step=state.global_step,
+                    digest=digest(model),
+                    optimizer=id(optimizer),
+                    scheduler=id(lr_scheduler),
+                    optimizer_steps=[int(s["step"]) for s in optimizer.state.values()],
+                    scheduler_step=lr_scheduler.last_epoch,
+                )
+            )
+
+    trainer = build_synchronous_trl_grpo_trainer(
+        model,
+        tokenizer,
+        args,
+        [TaskSpec("tiny-tool", [])],
+        rollout_fn=rollout,
+        publish_policy=publish,
+        policy_prefix="tiny",
+        old_logprobs_source="behavior",
+        peft_config=lora_config_class(
+            task_type="CAUSAL_LM", r=2, lora_alpha=4, lora_dropout=0.0, target_modules=["c_attn"], bias="none"
+        ),
+        callbacks=[Audit()],
+    )
+    original_loss = trainer._compute_loss
+
+    def observe_loss(model, inputs):
+        consumed.append(
+            dict(
+                step=trainer.state.global_step,
+                completion=inputs["completion_ids"].detach().cpu().clone(),
+                old=inputs["old_per_token_logps"].detach().cpu().clone(),
+                sampled=inputs["sampling_per_token_logps"].detach().cpu().clone(),
+                mask=inputs["tool_mask"].detach().cpu().clone(),
+                training=model.training,
+                gc=model.is_gradient_checkpointing,
+            )
+        )
+        loss = original_loss(model, inputs)
+        consumed[-1]["loss"] = loss.detach().item()
+        consumed[-1]["advantage"] = inputs["advantages"].detach().cpu().clone()
+        return loss
+
+    trainer._compute_loss = observe_loss  # Test-only observation; native loss is unchanged.
+    zero_row_gradient_norms = []
+
+    def observe_gradient(gradient):
+        if not consumed[-1]["mask"].any():
+            zero_row_gradient_norms.append(gradient.norm().item())
+
+    hooks = [p.register_hook(observe_gradient) for p in trainer.model.parameters() if p.requires_grad]
+    try:
+        result = trainer.train()
+    finally:
+        for hook in hooks:
+            hook.remove()
+    assert trainer.state.global_step == 2 and math.isfinite(result.training_loss)
+    assert [row["step"] for row in sampled] == [0, 1]
+    assert [row["global_step"] for row in publications] == [0, 1, 2]
+    assert sampled[1]["digest"] == updates[0]["digest"] == publications[1]["weight_digest"]
+    assert sampled[0]["digest"] != sampled[1]["digest"] != publications[2]["weight_digest"]
+    assert len({row["optimizer"] for row in sampled + updates}) == 1
+    assert len({row["scheduler"] for row in sampled + updates}) == 1
+    assert [row["scheduler_step"] for row in updates] == [1, 2]
+    assert all(set(row["optimizer_steps"]) == {row["step"]} for row in updates)
+    assert [row["step"] for row in consumed] == [0] * 4 + [1] * 4
+    for step in (0, 1):
+        actual = consumed[step * 4 : (step + 1) * 4]
+        assert Counter(tuple(row["completion"][0].tolist()) for row in actual) == Counter(
+            tuple(ids[2:]) for ids in sampled[step]["ids"]
+        )
+        for row in actual:
+            assert row["training"] and row["gc"]
+            torch.testing.assert_close(row["old"], row["sampled"])
+            match = next(i for i, ids in enumerate(sampled[step]["ids"]) if ids[2:] == row["completion"][0].tolist())
+            assert row["mask"].tolist() == [sampled[step]["masks"][match][2:]]
+            torch.testing.assert_close(row["sampled"][0], torch.tensor(sampled[step]["logprobs"][match][2:]))
+        if zero_mask_member:
+            zero_rows = [row for row in actual if not row["mask"].any()]
+            assert len(zero_rows) == 1 and zero_rows[0]["loss"] == 0.0
+            advantages = sorted(row["advantage"].item() for row in actual)
+            assert advantages == pytest.approx([-1.5 / 1.0002] + [0.5 / 1.0002] * 3)
+    if zero_mask_member:
+        assert zero_row_gradient_norms and all(norm == 0.0 for norm in zero_row_gradient_norms)
+    bridge = trainer.lmflow_sync_bridge
+    assert bridge.completed_steps == 2 and bridge.active is None
+    assert all(row["status"] == "updated" for row in bridge.history)
+    assert bridge.final_publication == publications[-1]
+
+
+def test_dataset_model_pipeline_example_and_native_adapter_reload(tmp_path):
+    import runpy
+    from pathlib import Path
+
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+
+    root = Path(__file__).resolve().parents[3]
+    example = runpy.run_path(str(root / "examples/grpo_tiny.py"))
+    model, pipeline = example["run"](tmp_path)
+    assert model.get_backend_model() is pipeline.trainer.model
+    assert pipeline.trainer.state.global_step == 2
+    assert [record["global_step"] for record in pipeline.trainer.lmflow_sync_bridge.history] == [0, 1]
+    pipeline.trainer.save_model(str(tmp_path / "adapter"))
+    restored = PeftModel.from_pretrained(
+        AutoModelForCausalLM.from_pretrained(tmp_path / "initial"), tmp_path / "adapter"
+    )
+    ids = torch.tensor([[4, 5]])
+    model.get_backend_model().eval()
+    restored.eval()
+    with torch.no_grad():
+        expected = model.get_backend_model()(input_ids=ids, use_cache=False).logits
+        actual = restored(input_ids=ids, use_cache=False).logits
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
