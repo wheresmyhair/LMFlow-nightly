@@ -132,6 +132,54 @@ def test_qwen_message_loss_control_preserves_rendered_prompt():
     )
 
 
+def test_qwen_assistant_loss_includes_header_eos_and_separator():
+    tokenizer = _qwen_test_tokenizer()
+    result = _tokenize_qwen(
+        [
+            {"role": "user", "content": "USER_TOKEN"},
+            {"role": "assistant", "content": "ASSISTANT_TOKEN"},
+        ],
+        tokenizer=tokenizer,
+        block_size=256,
+    )
+    assistant_ids = tokenizer.encode(
+        "<|im_start|>assistant\n<think>\n\n</think>\n\nASSISTANT_TOKEN<|im_end|>\n",
+        add_special_tokens=False,
+    )
+    spans = _find_subsequence_spans(result["input_ids"][0], assistant_ids)
+    assert len(spans) == 1
+    start, end = spans[0]
+    assert result["labels"][0][start:end] == assistant_ids
+    assert all(label == -100 for label in result["labels"][0][:start])
+    assert all(label == -100 for label in result["labels"][0][end:])
+    assert result["attention_mask"][0][start:end] == [1] * len(assistant_ids)
+
+
+@pytest.mark.parametrize(("observation_role", "preserve_reasoning"), [("user", False), ("tool", True)])
+def test_qwen_history_reasoning_follows_user_query_boundary(observation_role, preserve_reasoning):
+    tokenizer = _qwen_test_tokenizer()
+    result = _tokenize_qwen(
+        [
+            {"role": "user", "content": "USER_TOKEN"},
+            {"role": "assistant", "content": "FIRST_ACTION", "reasoning_content": "HISTORY_REASON"},
+            {"role": observation_role, "content": "Output:\nOBS_TOKEN"},
+            {"role": "assistant", "content": "SECOND_ACTION", "reasoning_content": "CURRENT_REASON"},
+        ],
+        tokenizer=tokenizer,
+    )
+    active_ids = [
+        token for token, active in zip(result["input_ids"][0], result["attention_mask"][0], strict=True) if active
+    ]
+    rendered = tokenizer.decode(active_ids)
+    assert ("HISTORY_REASON" in rendered) is preserve_reasoning
+    for token in ("FIRST_ACTION", "SECOND_ACTION", "CURRENT_REASON"):
+        _assert_token_labels(result, tokenizer, token, lambda token_ids: token_ids)
+    for token in ("USER_TOKEN", "OBS_TOKEN"):
+        _assert_token_labels(result, tokenizer, token, lambda token_ids: [-100] * len(token_ids))
+    if preserve_reasoning:
+        _assert_token_labels(result, tokenizer, "HISTORY_REASON", lambda token_ids: token_ids)
+
+
 def test_qwen_message_loss_control_masks_only_selected_assistant_turn():
     tokenizer = _qwen_test_tokenizer()
     messages = [
