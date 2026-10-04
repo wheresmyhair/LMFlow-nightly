@@ -163,6 +163,26 @@ def test_projects_sealed_groups_to_official_rollout_and_reward_hooks():
         bridge.rollout_func(["lmflow-sealed-group-0"] * 2, trainer=None)
 
 
+@pytest.mark.parametrize("constant_rewards", [False, True])
+def test_zero_mask_member_preserves_complete_group_and_reward(constant_rewards):
+    data = _sealed_rollouts()
+    data.batch["loss_mask"][0].zero_()
+    if constant_rewards:
+        data.batch["rewards"].zero_()
+    bridge = _SealedRolloutBridge(data)
+    handles = bridge.dataset_dict()["prompt"]
+    prompts = [handle for handle in handles for _ in range(bridge.num_generations)]
+    rollout = bridge.rollout_func(prompts, trainer=None)
+
+    assert rollout["rollout_id"] == [100, 101, 102, 103]
+    assert rollout["completion_ids"][0] == [20, 30]
+    assert rollout["env_mask"][0] == [0.0, 0.0]
+    assert rollout["logprobs"][0] == pytest.approx([-0.1, 0.0])
+    assert rollout["audited_reward"] == data.batch["rewards"].tolist()
+    rewards = bridge.reward_func(prompts=prompts, completions=[""] * 4, **rollout)
+    assert rewards == data.batch["rewards"].tolist()
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
@@ -172,6 +192,7 @@ def test_projects_sealed_groups_to_official_rollout_and_reward_hooks():
             "policy_version",
         ),
         (lambda data: data.batch["loss_mask"].__setitem__((0, 2), 0.5), "only 0 or 1"),
+        (lambda data: data.batch["loss_mask"].zero_(), "batch must select at least one"),
         (lambda data: data.batch["attention_mask"].__setitem__((0, 1), 0), "contiguous right padding"),
         (lambda data: data.non_tensor_batch["group_ids"].__setitem__(3, 12), "same size"),
         (lambda data: data.non_tensor_batch["rollout_ids"].__setitem__(3, 102), "unique"),

@@ -91,6 +91,8 @@ class _SealedRolloutBridge:
             raise TypeError(f"prompt_lengths must use torch.long, got {prompt_lengths.dtype}")
         _validate_binary_tensor(attention_mask, name="attention_mask")
         _validate_binary_tensor(loss_mask, name="loss_mask")
+        if not torch.any(loss_mask > 0):
+            raise ValueError("sealed rollout batch must select at least one policy completion token")
         if not torch.isfinite(old_log_probs).all():
             raise ValueError("old_log_probs must contain only finite values")
         if not torch.isfinite(rewards).all():
@@ -158,8 +160,6 @@ class _SealedRolloutBridge:
             if torch.any(loss_mask[index, :prompt_length] != 0):
                 raise ValueError(f"row {index} loss_mask must exclude every prompt token")
             completion_mask = loss_mask[index, prompt_length:active_length]
-            if not torch.any(completion_mask > 0):
-                raise ValueError(f"row {index} must contain at least one policy completion token")
             self.max_prompt_length = max(self.max_prompt_length, prompt_length)
             self.max_completion_length = max(self.max_completion_length, active_length - prompt_length)
             rows.append(
@@ -309,7 +309,7 @@ def _build_behavior_logprob_trainer_class(base_class):
     return _BehaviorLogprobGRPOTrainer
 
 
-def _validate_training_args(args: Any, bridge: _SealedRolloutBridge) -> None:
+def _validate_training_args(args: Any, bridge: _SealedRolloutBridge, *, max_steps: int = 1) -> None:
     expected: Mapping[str, Any] = {
         "beta": 0.0,
         "sync_ref_model": False,
@@ -334,8 +334,8 @@ def _validate_training_args(args: Any, bridge: _SealedRolloutBridge) -> None:
         for name, required in expected.items()
         if getattr(args, name, None) != required
     ]
-    if getattr(args, "max_steps", None) != 1:
-        mismatches.append(f"max_steps={getattr(args, 'max_steps', None)!r} (expected 1)")
+    if getattr(args, "max_steps", None) != max_steps:
+        mismatches.append(f"max_steps={getattr(args, 'max_steps', None)!r} (expected {max_steps})")
     if getattr(args, "world_size", None) != 1:
         mismatches.append(f"world_size={getattr(args, 'world_size', None)!r} (expected 1)")
     if getattr(args, "per_device_train_batch_size", None) != 1:
