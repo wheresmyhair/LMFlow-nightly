@@ -181,7 +181,7 @@ def build_synchronous_trl_grpo_trainer(
     """
     dataset_class, config_class, trainer_base = _load_trl()
     if not isinstance(args, config_class):
-        raise TypeError("args must be a TRL 1.9.2 GRPOConfig")
+        raise TypeError("args must be a TRL 1.15.0 GRPOConfig")
     if old_logprobs_source != "behavior":
         raise ValueError("old_logprobs_source must explicitly select 'behavior'")
     if not policy_prefix or not isinstance(policy_prefix, str):

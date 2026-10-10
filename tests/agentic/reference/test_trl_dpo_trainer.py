@@ -11,12 +11,14 @@ from lmflow.agentic import TRLDPOTrainer
 from lmflow.datasets.dataset import Dataset
 from lmflow.utils.conversation_template.qwen import QWEN3_TEMPLATE
 
-pytestmark = pytest.mark.optional_backend
+pytestmark = [pytest.mark.optional_backend, pytest.mark.gpu]
 
-_TRL_VERSION = "1.9.2"
+_TRL_VERSION = "1.15.0"
 
 
 def _load_backend():
+    if not torch.cuda.is_available():
+        pytest.skip("native TRL 1.15 fused scoring requires CUDA")
     try:
         installed_version = version("trl")
     except PackageNotFoundError:
@@ -153,7 +155,7 @@ def _make_args(tmp_path):
         beta=0.1,
         loss_type="sigmoid",
         max_length=1024,
-        use_cpu=True,
+        use_cpu=False,
         bf16=False,
         fp16=False,
         report_to="none",

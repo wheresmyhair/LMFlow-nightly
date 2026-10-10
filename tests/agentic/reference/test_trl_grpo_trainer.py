@@ -4,6 +4,8 @@ import copy
 import hashlib
 import inspect
 import math
+import subprocess
+import sys
 from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 
@@ -17,9 +19,9 @@ from lmflow.utils.protocol import DataProto
 
 pytestmark = pytest.mark.optional_backend
 
-_TRL_VERSION = "1.9.2"
-_GENERATE_SCORE_SOURCE_SHA256 = "da3b7eb07b6398e7ae500646a582d159bf9abfccc8fe70134c70ebb857d90755"
-_COMPUTE_LOSS_SOURCE_SHA256 = "9721cd3affc33b37b8089d7a41463dd864535861bfb42cec7c50984d25d3f3da"
+_TRL_VERSION = "1.15.0"
+_GENERATE_SCORE_SOURCE_SHA256 = "1fa48922792dcd5c72da155cfe99db477771a7c61cde15519fe8c86d0cdc0b65"
+_COMPUTE_LOSS_SOURCE_SHA256 = "80295546bbdbf6f711acce7f6e69b0100ab40aa8f23ed8052cc564ff024e3e40"
 _VOCAB = {
     "<pad>": 0,
     "<eos>": 1,
@@ -103,7 +105,7 @@ def _make_tokenizer_and_model():
         pad_token_id=_VOCAB["<pad>"],
         use_cache=False,
     )
-    return tokenizer, model_class(config).double()
+    return tokenizer, model_class(config).float()
 
 
 def _completion_logprobs(model, prompt_ids, completion_ids):
@@ -155,7 +157,7 @@ def _sealed_rollouts(model, *, logprob_shift=0.25):
     )
 
 
-def _make_args(tmp_path):
+def _make_args(tmp_path, *, bf16=False):
     *_, config_class, _ = _load_backend()
     return config_class(
         output_dir=str(tmp_path),
@@ -174,6 +176,7 @@ def _make_args(tmp_path):
         gradient_checkpointing_kwargs={"use_reentrant": False},
         use_cache=False,
         beta=0.0,
+        use_bias_correction_kl=False,
         loss_type="grpo",
         scale_rewards="group",
         importance_sampling_level="token",
@@ -182,7 +185,8 @@ def _make_args(tmp_path):
         shuffle_dataset=False,
         seed=20260831,
         data_seed=20260831,
-        use_cpu=True,
+        use_cpu=False,
+        bf16=bf16,
         dataloader_pin_memory=False,
         logging_strategy="no",
         save_strategy="no",
@@ -208,7 +212,10 @@ def test_locked_trl_private_source_contract():
     }
 
 
+@pytest.mark.gpu
 def test_standard_train_lifecycle_consumes_behavior_old_logprobs_and_updates_only_lora(tmp_path):
+    if not torch.cuda.is_available():
+        pytest.skip("native TRL 1.15 fused scoring requires CUDA")
     lora_config_class, *_, callback_class, _, _ = _load_backend()
     torch.manual_seed(20260831)
     tokenizer, model = _make_tokenizer_and_model()
@@ -242,6 +249,11 @@ def test_standard_train_lifecycle_consumes_behavior_old_logprobs_and_updates_onl
         target_modules=["c_attn"],
         bias="none",
     )
+    # Build the full-logits oracle before TRL patches model.forward. The fused
+    # forward closes over the original model and must not be deep-copied.
+    from peft import get_peft_model
+
+    oracle_model = get_peft_model(copy.deepcopy(model), copy.deepcopy(peft_config))
     trainer = build_one_step_trl_grpo_trainer(
         model,
         tokenizer,
@@ -279,14 +291,15 @@ def test_standard_train_lifecycle_consumes_behavior_old_logprobs_and_updates_onl
     parameters_before = {name: value.detach().clone() for name, value in trainer.model.named_parameters()}
     trainable_names = {name for name, value in trainer.model.named_parameters() if value.requires_grad}
     expected_advantages = torch.tensor([0.7070068, -0.7070068, -0.7070068, 0.7070068])
-    oracle_model = copy.deepcopy(trainer.model)
+    oracle_model.load_state_dict(trainer.model.state_dict())
+    oracle_model.to(trainer.model.device)
     oracle_data = DataProto.from_dict(
         tensors={
-            "input_ids": sealed_rollouts.batch["input_ids"].clone(),
-            "attention_mask": sealed_rollouts.batch["attention_mask"].clone(),
-            "loss_mask": sealed_rollouts.batch["loss_mask"].clone(),
-            "old_log_probs": sealed_rollouts.batch["old_log_probs"].clone(),
-            "advantages": expected_advantages.clone(),
+            "input_ids": sealed_rollouts.batch["input_ids"].to(oracle_model.device),
+            "attention_mask": sealed_rollouts.batch["attention_mask"].to(oracle_model.device),
+            "loss_mask": sealed_rollouts.batch["loss_mask"].to(oracle_model.device),
+            "old_log_probs": sealed_rollouts.batch["old_log_probs"].to(oracle_model.device),
+            "advantages": expected_advantages.to(oracle_model.device),
         }
     )
     oracle_model.zero_grad(set_to_none=True)
@@ -331,7 +344,7 @@ def test_standard_train_lifecycle_consumes_behavior_old_logprobs_and_updates_onl
             "source": "behavior",
             "input_field": "DataProto.batch['old_log_probs']",
             "trl_field": "old_per_token_logps",
-            "compatibility_contract": "trl==1.9.2:post-generate-score-injection",
+            "compatibility_contract": "trl==1.15.0:post-generate-score-injection",
         },
         "reference": {"enabled": False, "source": None, "reason": "beta=0"},
     }
@@ -364,8 +377,11 @@ def test_builder_rejects_non_grpo_config_before_trainer_construction():
         )
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize("zero_mask_member", [False, True])
 def test_continuous_train_samples_updated_policy_and_keeps_native_optimizer(tmp_path, zero_mask_member):
+    if not torch.cuda.is_available():
+        pytest.skip("native TRL 1.15 fused scoring requires CUDA")
     from lmflow.agentic.contracts import TaskSpec
     from lmflow.agentic.trl_grpo_loop import build_synchronous_trl_grpo_trainer
 
@@ -398,7 +414,7 @@ def test_continuous_train_samples_updated_policy_and_keeps_native_optimizer(tmp_
         return receipt
 
     def generate(model, prefix):
-        ids = torch.tensor([prefix])
+        ids = torch.tensor([prefix], device=model.device)
         output = model.generate(
             input_ids=ids,
             attention_mask=torch.ones_like(ids),
@@ -561,7 +577,10 @@ def test_continuous_train_samples_updated_policy_and_keeps_native_optimizer(tmp_
     assert bridge.final_publication == publications[-1]
 
 
+@pytest.mark.gpu
 def test_dataset_model_pipeline_example_and_native_adapter_reload(tmp_path):
+    if not torch.cuda.is_available():
+        pytest.skip("native TRL 1.15 fused scoring requires CUDA")
     import runpy
     from pathlib import Path
 
@@ -577,11 +596,83 @@ def test_dataset_model_pipeline_example_and_native_adapter_reload(tmp_path):
     pipeline.trainer.save_model(str(tmp_path / "adapter"))
     restored = PeftModel.from_pretrained(
         AutoModelForCausalLM.from_pretrained(tmp_path / "initial"), tmp_path / "adapter"
-    )
-    ids = torch.tensor([[4, 5]])
+    ).to(model.get_backend_model().device)
+    ids = torch.tensor([[4, 5]], device=restored.device)
     model.get_backend_model().eval()
     restored.eval()
     with torch.no_grad():
         expected = model.get_backend_model()(input_ids=ids, use_cache=False).logits
         actual = restored(input_ids=ids, use_cache=False).logits
     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.gpu
+def test_bf16_native_update_export_and_cold_reload(tmp_path):
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+        pytest.skip("requires a CUDA GPU with BF16 support")
+    _load_backend()
+    # Accelerate precision state is process-global. Do not reuse the FP32 test
+    # process or mutate a constructed GRPOConfig's precision fields.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; from pathlib import Path; "
+            "runpy.run_path(sys.argv[1])['_check_bf16_update_and_reload'](Path(sys.argv[2]))",
+            __file__,
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _check_bf16_update_and_reload(tmp_path):
+    lora_config_class, *_ = _load_backend()
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+
+    torch.manual_seed(71)
+    tokenizer, model = _make_tokenizer_and_model()
+    model.to(torch.bfloat16)
+    model.save_pretrained(tmp_path / "base")
+    data = _sealed_rollouts(model)
+    args = _make_args(tmp_path / "trainer", bf16=True)
+    trainer = build_one_step_trl_grpo_trainer(
+        model,
+        tokenizer,
+        args,
+        data,
+        old_logprobs_source="behavior",
+        peft_config=lora_config_class(
+            task_type="CAUSAL_LM", r=2, lora_alpha=4, lora_dropout=0.0, target_modules=["c_attn"], bias="none"
+        ),
+    )
+    before = {name: value.detach().clone() for name, value in trainer.model.named_parameters()}
+    result = trainer.train()
+    assert trainer.state.global_step == 1 and math.isfinite(result.training_loss)
+    assert trainer.accelerator.mixed_precision == "bf16"
+    assert any(
+        not torch.equal(value, before[name]) for name, value in trainer.model.named_parameters() if value.requires_grad
+    )
+    assert all(
+        torch.equal(value, before[name]) for name, value in trainer.model.named_parameters() if not value.requires_grad
+    )
+    trainer.save_model(str(tmp_path / "adapter"))
+    restored = (
+        PeftModel.from_pretrained(
+            AutoModelForCausalLM.from_pretrained(tmp_path / "base", dtype=torch.bfloat16), tmp_path / "adapter"
+        )
+        .to("cuda")
+        .eval()
+    )
+    live = trainer.accelerator.unwrap_model(trainer.model).eval()
+    ids = torch.tensor([[3, 4]], device="cuda")
+    # Match inference dtype/context on both sides; loading alone does not
+    # restore Trainer's autocast wrapper.
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        expected = live(input_ids=ids, use_cache=False).logits.float()
+        actual = restored(input_ids=ids, use_cache=False).logits.float()
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)

@@ -5108,9 +5108,9 @@ triton==3.6.0 \
     #   humming-kernels
     #   torch
     #   xgrammar
-trl==1.9.2 \
-    --hash=sha256:27847cd9b429af83365b311bb9d93e24bc8cdcc80a54973a6c6cb18a084bce75 \
-    --hash=sha256:8107d5c6d45478205aead0f211e6bbc2f673388421972de635fe40ae1d5f5e61
+trl==1.15.0 \
+    --hash=sha256:9c9a4b68a184a0b6425293e9b152950f817af686f3758f70191fff4ded1391c7 \
+    --hash=sha256:b68e24d797a6a63b6ce07e37c3a62cc2bab8240d36d99154d99d30a183e705c4
     # via -r requirements/agentic/agentic-cu130.in
 truststore==0.10.4 \
     --hash=sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301 \
