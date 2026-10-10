@@ -6,10 +6,54 @@ import torch
 from lmflow.agentic.completion import OpenAICompatibleCompletionBackend, normalize_completion_response
 from lmflow.agentic.vllm_token_native import (
     VLLMChatTokenData,
+    _pack_token_sequences,
     assemble_vllm_chat_token_data,
     extract_vllm_chat_token_data,
     vllm_token_native_model_kwargs,
 )
+
+
+@pytest.mark.parametrize("anchor_to_later_call", [False, True])
+@pytest.mark.parametrize("float_dtype", [torch.float32, torch.float64])
+def test_pack_preserves_rows_call_anchors_zero_mask_members_and_dtypes(anchor_to_later_call, float_dtype):
+    def call(prompt, output, logprobs):
+        return VLLMChatTokenData("test", "chatcmpl-test", tuple(prompt), tuple(output), tuple(logprobs), "stop")
+
+    rows = [
+        assemble_vllm_chat_token_data(
+            [call([1, 2], [3], [-0.125]), call([1, 2, 3, 4, 5], [6, 7], [-0.25, -0.5])],
+            optimize_calls=[False, True],
+            anchor_to_first_optimized_call=anchor_to_later_call,
+        ),
+        assemble_vllm_chat_token_data([call([11, 12, 13], [14], [-0.0625])], optimize_calls=[False]),
+        assemble_vllm_chat_token_data([call([41, 42], [43], [-1.0])]),
+    ]
+    packed = _pack_token_sequences(rows, pad_token_id=99, float_dtype=float_dtype)
+    expected = {
+        "input_ids": torch.tensor([[1, 2, 3, 4, 5, 6, 7], [11, 12, 13, 14, 99, 99, 99], [41, 42, 43, 99, 99, 99, 99]]),
+        "attention_mask": torch.tensor([[1] * 7, [1] * 4 + [0] * 3, [1] * 3 + [0] * 4]),
+        "loss_mask": torch.tensor([[0, 0, 0, 0, 0, 1, 1], [0] * 7, [0, 0, 1, 0, 0, 0, 0]], dtype=float_dtype),
+        "old_log_probs": torch.tensor(
+            [
+                [0, 0, 0 if anchor_to_later_call else -0.125, 0, 0, -0.25, -0.5],
+                [0, 0, 0, -0.0625, 0, 0, 0],
+                [0, 0, -1, 0, 0, 0, 0],
+            ],
+            dtype=float_dtype,
+        ),
+        "prompt_lengths": torch.tensor([5 if anchor_to_later_call else 2, 3, 2]),
+    }
+    assert packed.keys() == expected.keys()
+    for name, value in expected.items():
+        assert packed[name].dtype == value.dtype
+        assert torch.equal(packed[name], value), name
+    packed["input_ids"][0, 0] = 999
+    assert rows[0].input_ids[0] == 1
+
+
+def test_pack_rejects_empty_rows():
+    with pytest.raises(ValueError, match="empty"):
+        _pack_token_sequences([], pad_token_id=0)
 
 
 def _completion(*, response_id="chatcmpl-request-1", prompt=(1, 2), output=(3, 4), logprobs=(-0.1, -0.2)):

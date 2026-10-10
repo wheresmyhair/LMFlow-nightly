@@ -28,6 +28,7 @@ from lmflow.agentic.appworld_protocol import (
 from lmflow.agentic.completion import CompletionBackend, normalize_completion_response
 from lmflow.agentic.scaffolds.appworld_react_code.scaffold import (
     APPWORLD_REACT_CODE_SCAFFOLD,
+    AppWorldPrompt,
     extract_first_python_code,
     load_reference_prompt,
     qwen3_reference_model_kwargs,
@@ -522,6 +523,7 @@ def run_appworld_episode(
     source_split: str = APPWORLD_SOURCE_SPLIT,
     world_factory: Callable[..., Any] | None = None,
     step_evidence_sink: Callable[[str, int, Mapping[str, Any]], None] | None = None,
+    prompt: AppWorldPrompt | None = None,
 ) -> AppWorldEpisodeResult:
     """Run one local AppWorld task and evaluate it with AppWorld's verifier."""
 
@@ -549,8 +551,14 @@ def run_appworld_episode(
     if not root.is_dir():
         raise FileNotFoundError(f"AppWorld root does not exist: {root}")
     os.environ["APPWORLD_ROOT"] = str(root)
-    prompt = load_reference_prompt(appworld_source)
+    if prompt is not None and not isinstance(prompt, AppWorldPrompt):
+        raise TypeError("prompt must be an AppWorldPrompt")
+    prompt_text = load_reference_prompt(appworld_source) if prompt is None else prompt.text
     scaffold = scaffold_identity(appworld_source)
+    if prompt is not None:
+        scaffold["reference_prompt_sha256"] = scaffold["prompt_sha256"]
+        scaffold["prompt_sha256"] = prompt.sha256
+        scaffold["prompt_identity"] = prompt.identity
     factory = world_factory or _default_world_factory
 
     started_at = _monotonic_clock()
@@ -576,7 +584,7 @@ def run_appworld_episode(
         initialization_seconds = _monotonic_clock() - init_started_at
         raw_output_directory = Path(world.output_directory)
         initial_state_sha256 = _directory_digest(Path(world.output_db_home_path_on_disk))
-        initial_messages = render_reference_messages(prompt, world.task)
+        initial_messages = render_reference_messages(prompt_text, world.task)
         training_messages = _canonical_reference_messages(initial_messages, trajectory_id=trajectory_id)
         last_execution_output: str | None = None
         last_action_call_id: str | None = None
