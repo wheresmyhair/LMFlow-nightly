@@ -1,7 +1,8 @@
-"""Offline CPU example: Dataset -> two-call rollout -> two native GRPO updates.
+"""Offline tiny GPU example: Dataset -> two-call rollout -> two native GRPO updates.
 
 Run with ``PYTHONPATH=src python examples/grpo_tiny.py`` in the Agentic environment.
-No download, external API, GPU or benchmark score is involved. Replace the task
+No download, external API or benchmark score is involved. TRL 1.15 scoring
+requires a CUDA GPU. Replace the task
 adapter, rollout/reward functions and publication callback for a real environment.
 """
 
@@ -106,6 +107,8 @@ def reward(data):
 
 
 def run(directory):
+    if not torch.cuda.is_available():
+        raise RuntimeError("TRL 1.15 native GRPO requires a CUDA GPU")
     torch.manual_seed(43)
     torch.set_num_threads(2)
     root = Path(directory)
@@ -166,12 +169,13 @@ def run(directory):
         gradient_checkpointing_kwargs={"use_reentrant": False},
         use_cache=False,
         beta=0.0,
+        use_bias_correction_kl=False,
         loss_type="grpo",
         scale_rewards="group",
         num_iterations=1,
         vllm_importance_sampling_correction=False,
         shuffle_dataset=False,
-        use_cpu=True,
+        use_cpu=False,
         bf16=False,
         dataloader_pin_memory=False,
         seed=43,

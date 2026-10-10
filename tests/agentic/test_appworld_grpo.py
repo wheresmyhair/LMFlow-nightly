@@ -304,16 +304,19 @@ def test_prompt_requires_exact_digest(tmp_path):
 
 
 @pytest.mark.optional_backend
-def test_cpu_native_lifecycle_with_synthetic_appworld_actions(setup):
+@pytest.mark.gpu
+def test_gpu_native_lifecycle_with_synthetic_appworld_actions(setup):
     """Real tiny Trainer updates, fake environment/actions; no benchmark claim."""
     from importlib.metadata import PackageNotFoundError, version
 
     try:
         installed_version = version("trl")
     except PackageNotFoundError:
-        pytest.skip("requires trl==1.9.2")
-    if installed_version != "1.9.2":
-        pytest.skip(f"requires trl==1.9.2, found {installed_version}")
+        pytest.skip("requires trl==1.15.0")
+    if installed_version != "1.15.0":
+        pytest.skip(f"requires trl==1.15.0, found {installed_version}")
+    if not torch.cuda.is_available():
+        pytest.skip("native TRL 1.15 fused scoring requires CUDA")
 
     from peft import LoraConfig
     from tokenizers import Tokenizer
@@ -387,12 +390,13 @@ def test_cpu_native_lifecycle_with_synthetic_appworld_actions(setup):
         gradient_checkpointing_kwargs={"use_reentrant": False},
         use_cache=False,
         beta=0.0,
+        use_bias_correction_kl=False,
         loss_type="grpo",
         scale_rewards="group",
         num_iterations=1,
         vllm_importance_sampling_correction=False,
         shuffle_dataset=False,
-        use_cpu=True,
+        use_cpu=False,
         bf16=False,
         dataloader_pin_memory=False,
         seed=43,

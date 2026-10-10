@@ -13,7 +13,7 @@ import torch
 
 from lmflow.utils.protocol import DataProto
 
-_SUPPORTED_TRL_VERSION = "1.9.2"
+_SUPPORTED_TRL_VERSION = "1.15.0"
 
 
 def _load_trl():
@@ -194,7 +194,7 @@ class _SealedRolloutBridge:
                 "source": "behavior",
                 "input_field": "DataProto.batch['old_log_probs']",
                 "trl_field": "old_per_token_logps",
-                "compatibility_contract": "trl==1.9.2:post-generate-score-injection",
+                "compatibility_contract": "trl==1.15.0:post-generate-score-injection",
             },
             "reference": {
                 "enabled": False,
@@ -287,7 +287,7 @@ class _SealedRolloutBridge:
 
 def _build_behavior_logprob_trainer_class(base_class):
     class _BehaviorLogprobGRPOTrainer(base_class):
-        """TRL 1.9.2 compatibility shim that selects sampled log-probs as PPO old log-probs."""
+        """TRL 1.15.0 shim selecting sampled log-probs as PPO old log-probs."""
 
         def _generate_and_score_completions(self, inputs):
             output = super()._generate_and_score_completions(inputs)
@@ -400,7 +400,7 @@ def build_one_step_trl_grpo_trainer(
     peft_config: Any = None,
     callbacks: list[Any] | None = None,
 ):
-    """Build a TRL 1.9.2 trainer that consumes one complete sealed rollout batch.
+    """Build a TRL 1.15.0 trainer that consumes one complete sealed rollout batch.
 
     The returned object is a normal ``GRPOTrainer`` and must be run through
     ``trainer.train()``. The only compatibility override promotes the sampled

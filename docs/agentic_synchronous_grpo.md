@@ -9,7 +9,7 @@ For a real multi-step environment producer, see [AppWorld GRPO](agentic_appworld
 and `examples/appworld_grpo.py`. It reuses this lifecycle with fresh reset/replay,
 official scalar rewards and per-call token evidence; serving remains caller-owned.
 
-Run the offline CPU example in the Agentic environment:
+Run the offline tiny GPU example in the Agentic environment:
 
 ```bash
 PYTHONPATH=src python examples/grpo_tiny.py
@@ -19,7 +19,9 @@ The example creates a tiny local model, loads it through LMFlow `AutoModel`, and
 uses an ordinary text Dataset. Its two-call toy rollout records sampled IDs and
 generation scores, with a zero-loss environment observation between calls. Two
 updates share one optimizer and scheduler. The toy reward is an engineering
-demonstration, not a benchmark quality result. No download or GPU is required.
+demonstration, not a benchmark quality result. No download is required. Native
+TRL 1.15 scoring requires a CUDA GPU; CPU-only installations can run the data
+contract tests, but cannot run this example.
 
 ## Replace only the environment-specific pieces
 
@@ -88,11 +90,18 @@ learning on those actions.
 
 ## Current support boundary
 
-The bridge is locked to TRL 1.9.2. It uses the public, upstream-experimental
+The bridge is locked to TRL 1.15.0. It uses the public, upstream-experimental
 `rollout_func` and one version-locked compatibility seam after native generation/
 scoring to select behavior log-probs as trainer-old log-probs. Sampling fields are
 retained separately; KL/reference is disabled (`beta=0`). It does not override
 input preparation, training steps or the Trainer loop.
+
+Set `use_bias_correction_kl=False` explicitly: TRL 1.15 changed that default.
+Keep `loss_type="grpo"` explicit as well; the upstream default is DAPO. The
+native fused LM head is used without a replacement scoring or training path.
+LoRA targeting `lm_head` is rejected by upstream; use backbone attention/MLP
+targets. See the [upgrade boundary](../requirements/agentic/README.md#trl-115-upgrade-boundary)
+for legacy consumers and validation limits.
 
 Supported: single process, microbatch1, complete equal-sized task groups, one
 optimization iteration per fresh batch, token-level GRPO clipping0.2,

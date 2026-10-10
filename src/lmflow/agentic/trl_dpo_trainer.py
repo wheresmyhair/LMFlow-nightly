@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from lmflow.datasets.dataset import Dataset
 
-_SUPPORTED_TRL_VERSION = "1.9.2"
+_SUPPORTED_TRL_VERSION = "1.15.0"
 _MESSAGE_ROLES = {"user", "assistant", "tool"}
 
 

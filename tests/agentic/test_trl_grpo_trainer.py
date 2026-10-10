@@ -142,7 +142,7 @@ def test_projects_sealed_groups_to_official_rollout_and_reward_hooks():
             "source": "behavior",
             "input_field": "DataProto.batch['old_log_probs']",
             "trl_field": "old_per_token_logps",
-            "compatibility_contract": "trl==1.9.2:post-generate-score-injection",
+            "compatibility_contract": "trl==1.15.0:post-generate-score-injection",
         },
         "reference": {"enabled": False, "source": None, "reason": "beta=0"},
     }
@@ -318,5 +318,5 @@ def test_behavior_logprob_bridge_fails_closed_on_private_output_drift(output, ma
 def test_backend_fails_closed_on_trl_version_drift(monkeypatch):
     monkeypatch.setattr(trl_grpo_trainer, "version", lambda package: "1.9.3")
 
-    with pytest.raises(RuntimeError, match="supports trl==1.9.2, found 1.9.3"):
+    with pytest.raises(RuntimeError, match="supports trl==1.15.0, found 1.9.3"):
         trl_grpo_trainer._load_trl()

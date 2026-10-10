@@ -10,6 +10,10 @@ benchmark-local and adds no training loop or serving scheduler.
 Load an LMFlow Model and a pinned Train Dataset, configure TRL `GRPOConfig`, and
 use `examples/appworld_grpo.py:build_pipeline`:
 
+The Agentic backend uses TRL 1.15.0 and its native fused CUDA scoring. Follow the
+[synchronous GRPO support boundary](agentic_synchronous_grpo.md#current-support-boundary),
+including explicit `loss_type="grpo"` and `use_bias_correction_kl=False`.
+
 ```python
 # All paths, resource limits and identities come from the experiment config.
 pipeline = build_pipeline(
@@ -118,7 +122,7 @@ to a model, export it as training Conversations, or commit it to Git.
 
 CPU fake-world tests cover fresh reset/replay, group completeness, genuine task
 failure vs infrastructure failure, scalar isolation, masks, lengths and policy
-receipts. A tiny CPU native-lifecycle test uses synthetic AppWorld actions to
+receipts. A tiny GPU native-lifecycle test uses synthetic AppWorld actions to
 check continuous integration, not real policy sampling or benchmark quality.
 Historical real episodes may verify token conversion only; they do not prove a
 fresh group or an updated policy. Real acceptance requires independently sampled
