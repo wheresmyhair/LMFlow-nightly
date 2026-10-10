@@ -1,5 +1,10 @@
 # Legacy TRL precomputed-loss adapter
 
+This historical adapter requires TRL 1.9.2 and rejects the current Agentic
+1.15.0 environment. It is not an upgrade fallback and must not be extended.
+The native lifecycle tests now cover loss/gradient agreement; removing this
+adapter and its callers is a separate cleanup decision.
+
 `TRLPolicyTrainer` is retained as a correctness reference for the existing
 LMFlow GRPO objective. It does not own the product GRPO training lifecycle.
 New sealed-rollout training uses the standard `GRPOTrainer.train()` path

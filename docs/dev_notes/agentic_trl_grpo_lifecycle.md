@@ -1,7 +1,7 @@
 # TRL GRPO lifecycle bridge
 
 LMFlow's sealed GRPO backend delegates the complete training lifecycle to
-TRL 1.9.2 `GRPOTrainer.train()`. LMFlow supplies one complete, token-native
+TRL 1.15.0 `GRPOTrainer.train()`. LMFlow supplies one complete, token-native
 rollout batch through TRL's public `rollout_func` and a thin audited reward
 function. TRL and Transformers continue to own gradient checkpointing, mixed
 precision, gradient accumulation, optimizer and scheduler steps, Accelerate,
@@ -66,7 +66,7 @@ The bridge records three distinct meanings:
 - `reference` belongs to the KL/reference-policy path. It is disabled in
   version 1 because `beta=0`.
 
-TRL 1.9.2's public `rollout_func` preserves returned `logprobs` as
+TRL 1.15.0's public `rollout_func` preserves returned `logprobs` as
 `sampling_per_token_logps`. In aligned, non-vLLM training it leaves
 `old_per_token_logps` absent, and the loss otherwise falls back to recomputed
 current-policy values. LMFlow therefore applies one narrow compatibility seam:
@@ -75,7 +75,7 @@ field exists and the old field is absent, validate shape and finiteness and
 inject a detached clone as `old_per_token_logps`. The sampled field is neither
 deleted nor rewritten.
 
-The package version is locked to `trl==1.9.2`. Reference tests pin the source
+The package version is locked to `trl==1.15.0`. Reference tests pin the source
 contract of the two private methods involved and exercise the observed output
 keys and loss behavior. A TRL version mismatch, an already-present old field,
 or private-output drift stops training before an optimizer step.
@@ -94,6 +94,7 @@ The one-step builder supports the following recipe:
 - `use_vllm=False` inside TRL because rollout already happened in LMFlow;
 - TRL's vLLM importance-sampling correction disabled;
 - gradient checkpointing enabled and `use_cache=False`;
+- `use_bias_correction_kl=False` explicitly (the upstream 1.15 default is true);
 - dataset shuffling, Liger, truncated-completion masking, and multi-step reuse
   disabled.
 
@@ -106,13 +107,33 @@ require separate contract evidence before they can be enabled.
 
 ## Verification boundary
 
-The locked reference test runs the standard Trainer lifecycle with a tiny PEFT
-model. It checks exact completion IDs, optimization-selection masks, audited
+The locked reference test runs the standard Trainer lifecycle and native fused
+GPU scoring with a tiny FP32 PEFT model. It checks exact completion IDs, optimization-selection masks, audited
 rewards, group advantages, sampled and trainer-old log-probabilities, loss,
 final accumulated gradients, one optimizer/scheduler step, active gradient
-checkpointing, LoRA-only parameter changes, and frozen base parameters.
+checkpointing, LoRA-only parameter changes, and frozen base parameters. Native
+training tests are marked `gpu` and `optional_backend`; CPU data validation,
+group assembly, and pure-torch objective tests remain independent of TRL.
 
-The GSM8K acceptance additionally projects the exact sealed 2-group, 16-rollout
+The FP32 loss and accumulated-gradient comparison uses absolute and relative
+tolerances of `1e-6` against the full-logits objective on the same tiny model.
+It detects normalization or accumulation mistakes without requiring bit-exact
+equality between fused and full-logits arithmetic. The independent oracle is
+built before TRL patches `forward`; copying a patched model would retain the
+upstream closure's original model reference. No test replaces the native scoring
+kernel. TRL's `loss_is_scaled_for_ga` compatibility with Transformers 5.14.1 is
+exercised by accumulated gradients and the continuous two-step lifecycle.
+
+A separate-process BF16 test checks native mixed precision, an actual LoRA
+update with the base frozen, adapter export, and reload from the saved base.
+Post-update and reloaded logits are compared under the same BF16 autocast
+context. This tests serialization within the same runtime, not bit-exact
+equivalence between library versions. Precision is selected when constructing
+the config; changing a precision field afterward does not rebuild Accelerate's
+process-global state.
+
+Historical TRL 1.9.2 GSM8K acceptance additionally projects the exact sealed 2-group, 16-rollout
 batch into this bridge and compares the resulting TRL objective and gradients
 against LMFlow's existing objective. Large-model update, adapter export, reload,
-and generation-side publication remain separate runtime acceptance steps.
+and generation-side publication under 1.15 remain separate runtime acceptance
+steps; historical 1.9.2 runs do not establish these upgrade results.

@@ -42,6 +42,40 @@ and rerun training, FSDP2, checkpoint, and vLLM smoke tests.
 `bitsandbytes`, `flash-attn`, and `cpm_kernels` remain outside the default
 profile until their combinations receive separate compatibility checks.
 
+## TRL 1.15 upgrade boundary
+
+The Agentic lock pins TRL 1.15.0. The migration retains all other package
+versions, including Transformers 5.14.1, PyTorch 2.11.0, Triton 3.6.0, PEFT
+0.20.0, Accelerate 1.14.0 and vLLM 0.25.1. Refresh just this package with
+`uv pip compile --upgrade-package trl` and the existing hash-generation options;
+review the resulting lock diff before synchronizing an isolated environment.
+
+- Agentic `GRPOPipeline` and the sealed GRPO builders use native
+  `GRPOTrainer.train()`, public `rollout_func`, and the existing small
+  behavior-old log-probability bridge. The fixed GRPO objective and masks are
+  preserved. Set `use_bias_correction_kl=False` explicitly when constructing
+  `GRPOConfig`; its upstream default changed in 1.15.
+- Agentic `TRLDPOTrainer` uses native sigmoid DPO with `DPOConfig` and
+  `processing_class`. Paired-conversation projection remains on CPU; native
+  DPO and GRPO scoring now use the upstream fused GPU/Triton path. LoRA on
+  `lm_head` is not supported by upstream.
+- `Finetuner` continues to use Transformers Trainer. Installing this lock does
+  not enable TRL SFTTrainer or selective activation checkpointing for LMFlow SFT.
+- Historical `TRLPolicyTrainer` remains locked to 1.9.2 and rejects this
+  environment. It is not a fallback for the native lifecycle. Its optional
+  historical differential tests may skip; those skips are not upgrade evidence.
+- `setup.py`'s `trl` extra remains the separate legacy 0.11 profile.
+  `DPOAligner` and `DPOv2Trainer` use old constructor arguments such as
+  `tokenizer`, `beta`, and length limits outside `DPOConfig`. They are not
+  supported by this Agentic lock. Do not install `lmflow[trl]` into it.
+
+CPU CI continues to exclude `gpu` and `optional_backend`. Native upgrade
+validation uses a local tiny CUDA model: sealed IDs/masks/rewards/behavior-old,
+loss/gradient accumulation, continuous fresh sampling across two updates,
+LoRA-only changes, adapter reload, and sigmoid DPO. This does not establish
+large-model performance, distributed/FSDP2, external vLLM publication, or task
+quality under 1.15. Those require separate bounded validation.
+
 ## AppWorld source and data
 
 The lock includes the runtime and build dependencies declared by AppWorld

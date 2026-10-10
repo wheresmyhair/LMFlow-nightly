@@ -27,6 +27,7 @@ extra_require = {
     "gradio": ["gradio"],
     "flask": ["flask", "flask_cors"],
     "flash_attn": ["flash-attn>=2.0.2"],
+    # Legacy DPOAligner/DPOv2 profile, separate from requirements/agentic.
     # rich is lazy-imported by trl's DPOTrainer; not declared in trl 0.11.x.
     "trl": ["trl>=0.11,<0.12", "rich"],
     "deepspeed": ["deepspeed>=0.14.4"],
