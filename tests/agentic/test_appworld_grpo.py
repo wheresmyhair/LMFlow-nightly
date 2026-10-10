@@ -303,8 +303,18 @@ def test_prompt_requires_exact_digest(tmp_path):
         AppWorldPrompt.from_file(path, identity="test/v1", sha256="0" * 64)
 
 
+@pytest.mark.optional_backend
 def test_cpu_native_lifecycle_with_synthetic_appworld_actions(setup):
     """Real tiny Trainer updates, fake environment/actions; no benchmark claim."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        installed_version = version("trl")
+    except PackageNotFoundError:
+        pytest.skip("requires trl==1.9.2")
+    if installed_version != "1.9.2":
+        pytest.skip(f"requires trl==1.9.2, found {installed_version}")
+
     from peft import LoraConfig
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
