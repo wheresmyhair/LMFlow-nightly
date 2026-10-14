@@ -38,17 +38,27 @@ logger = logging.getLogger(__name__)
 
 
 def _filter_samples_without_loss_labels(dataset, split_name: str):
-    """Drop fully masked samples without materializing streaming datasets."""
+    """Drop samples with no targets after the causal-LM label shift.
+
+    Map-style datasets fail when the filtered split is empty. Streaming
+    datasets stay lazy, so their emptiness cannot be checked up front.
+    """
+
+    def has_loss_bearing_labels(sample):
+        # Causal LM logits at position ``i`` predict ``labels[i + 1]``.
+        # A label at position 0 therefore never contributes to the loss.
+        return any(label != -100 for label in sample["labels"][1:])
+
     if isinstance(dataset, datasets.IterableDataset):
         logger.warning(
             "Filtering %s samples with no loss-bearing labels lazily; "
             "the dropped count and empty-split check are unavailable for streaming datasets.",
             split_name,
         )
-        return dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+        return dataset.filter(has_loss_bearing_labels)
 
     original_size = len(dataset)
-    dataset = dataset.filter(lambda sample: any(label != -100 for label in sample["labels"]))
+    dataset = dataset.filter(has_loss_bearing_labels)
     dropped_size = original_size - len(dataset)
     if dropped_size:
         logger.warning(
@@ -111,6 +121,34 @@ def _log_dataset_size(dataset, split_name: str, log=logger.warning):
         log("Number of %s samples: unknown (streaming dataset)", split_name)
     else:
         log("Number of %s samples: %d", split_name, sample_count)
+
+
+def _save_finetuned_model(trainer, model, model_args, finetuner_args):
+    """Save a reloadable final model or adapter after training.
+
+    An FSDP-wrapped PEFT model must be exported through ``Trainer.save_model``
+    so Accelerate can gather the configured full state dict before PEFT keeps
+    only adapter weights. Calling ``PeftModel.save_pretrained`` directly on the
+    sharded module can otherwise publish an incomplete adapter.
+    """
+    if not model_args.use_lora:
+        trainer.save_model()
+        return
+
+    if model_args.save_aggregated_lora:
+        if trainer.is_fsdp_enabled:
+            raise ValueError(
+                "save_aggregated_lora is not supported under FSDP; save the adapter first and merge it with the "
+                "base model in a separate non-sharded process."
+            )
+        model.merge_lora_weights()
+        model.save(finetuner_args.output_dir, save_full_model=True)
+        return
+
+    if trainer.is_fsdp_enabled:
+        trainer.save_model()
+    else:
+        model.save(finetuner_args.output_dir, save_full_model=False)
 
 
 class Finetuner(BaseTuner):
@@ -355,7 +393,7 @@ class Finetuner(BaseTuner):
             start_time = time.time()
             for datapoint in train_dataset:
                 total_tokens += len([label for label in datapoint["input_ids"] if label != pad_token_id])
-                total_target_tokens += len([label for label in datapoint["labels"] if label != -100])
+                total_target_tokens += len([label for label in datapoint["labels"][1:] if label != -100])
             logger.warning(
                 "Dataset stats:\n\n"
                 f"Total tokens: {total_tokens}\n"
@@ -488,12 +526,7 @@ class Finetuner(BaseTuner):
                 checkpoint = last_checkpoint
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
 
-            if not model_args.use_lora:
-                trainer.save_model()  # Saves the tokenizer too for easy upload
-            else:
-                if model_args.save_aggregated_lora:
-                    model.merge_lora_weights()
-                model.save(finetuner_args.output_dir, model_args.save_aggregated_lora)
+            _save_finetuned_model(trainer, model, model_args, finetuner_args)
             # save language_projection for multi-modal model;
             if self.finetuner_args.save_language_projection:
                 language_projection_state = trainer.model.language_projection.state_dict()

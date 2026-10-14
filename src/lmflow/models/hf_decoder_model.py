@@ -204,11 +204,13 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
                     raw_datasets.get_fingerprint()
                     + str(self.tokenizer)
                     + f"###padding_side={self.tokenizer.padding_side}"
+                    + f"###truncation_side={self.tokenizer.truncation_side}"
                     + (
                         "###conversation_template=" + str(conversation_template)
                         if "conversation" in dataset_type
                         else ""
                     )
+                    + (f"###train_on_prompt={data_args.train_on_prompt}" if "conversation" in dataset_type else "")
                     + f"###disable_group_texts={data_args.disable_group_texts}"
                     + f"###block_size={data_args.block_size}"
                 ).encode("utf-8")
