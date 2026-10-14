@@ -323,7 +323,20 @@ QWEN_QWQ_TEMPLATE = (
     "{%- endif %}"
 )
 
-QWEN3_TEMPLATE = (
+# Wraps an assistant message's generated part in a generation span unless the message sets
+# `loss: false`. Message-level loss relies on this macro; templates without it reject `loss`.
+_MAYBE_GENERATION_MACRO = (
+    "{%- macro maybe_generation(enabled) -%}"
+    "{%- set body = caller() -%}"
+    "{%- if enabled -%}"
+    "{% generation %}{{- body }}{% endgeneration %}"
+    "{%- else -%}"
+    "{{- body }}"
+    "{%- endif -%}"
+    "{%- endmacro -%}"
+)
+
+_QWEN3_SYSTEM_AND_TOOLS = (
     "{%- if tools %}"
     "{{- '<|im_start|>system\\n' }}"
     "{%- if messages[0].role == 'system' %}"
@@ -340,38 +353,9 @@ QWEN3_TEMPLATE = (
     "{{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}"
     "{%- endif %}"
     "{%- endif %}"
-    "{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}"
-    "{%- for message in messages[::-1] %}"
-    "{%- set index = (messages|length - 1) - loop.index0 %}"
-    "{%- if ns.multi_step_tool and message.role == \"user\" and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}"
-    "{%- set ns.multi_step_tool = false %}"
-    "{%- set ns.last_query_index = index %}"
-    "{%- endif %}"
-    "{%- endfor %}"
-    "{%- for message in messages %}"
-    '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}'
-    "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
-    '{%- elif message.role == "assistant" %}'
-    "{% generation %}"
-    "{%- set content = message.content %}"
-    "{%- set reasoning_content = '' %}"
-    "{%- if message.reasoning_content is defined and message.reasoning_content is not none %}"
-    "{%- set reasoning_content = message.reasoning_content %}"
-    "{%- else %}"
-    "{%- if '</think>' in message.content %}"
-    "{%- set content = message.content.split('</think>')[-1].lstrip('\\n') %}"
-    "{%- set reasoning_content = message.content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}"
-    "{%- endif %}"
-    "{%- endif %}"
-    "{%- if loop.index0 > ns.last_query_index %}"
-    "{%- if loop.last or (not loop.last and reasoning_content) %}"
-    "{{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}"
-    "{%- else %}"
-    "{{- '<|im_start|>' + message.role + '\\n' + content }}"
-    "{%- endif %}"
-    "{%- else %}"
-    "{{- '<|im_start|>' + message.role + '\\n' + content }}"
-    "{%- endif %}"
+)
+
+_QWEN3_TOOL_CALLS = (
     "{%- if message.tool_calls %}"
     "{%- for tool_call in message.tool_calls %}"
     "{%- if (loop.first and content) or (not loop.first) %}"
@@ -391,8 +375,9 @@ QWEN3_TEMPLATE = (
     "{{- '}\\n</tool_call>' }}"
     "{%- endfor %}"
     "{%- endif %}"
-    "{{- '<|im_end|>\\n' }}"
-    "{% endgeneration %}"
+)
+
+_QWEN3_TOOL_RESPONSE = (
     '{%- elif message.role == "tool" %}'
     '{%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}'
     "{{- '<|im_start|>user' }}"
@@ -405,10 +390,88 @@ QWEN3_TEMPLATE = (
     "{%- endif %}"
     "{%- endif %}"
     "{%- endfor %}"
-    "{%- if add_generation_prompt %}"
-    "{{- '<|im_start|>assistant\\n' }}"
-    "{%- if enable_thinking is defined and enable_thinking is false %}"
-    "{{- '<think>\\n\\n</think>\\n\\n' }}"
-    "{%- endif %}"
-    "{%- endif %}"
+)
+
+# Qwen3's own chat template, with generation spans for assistant-only loss. The span covers what the
+# model generates after the `<|im_start|>assistant\n` prompt, up to and including `<|im_end|>`.
+# Like the original, it drops reasoning from assistant turns before the last user query and adds an
+# empty think block to the last turn, so multi-turn data whose observations arrive as user messages
+# is rewritten; the train/inference prefix check reports that. Use `qwen3_nothink` for such data.
+QWEN3_TEMPLATE = (
+    _MAYBE_GENERATION_MACRO
+    + _QWEN3_SYSTEM_AND_TOOLS
+    + (
+        "{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}"
+        "{%- for message in messages[::-1] %}"
+        "{%- set index = (messages|length - 1) - loop.index0 %}"
+        "{%- if ns.multi_step_tool and message.role == \"user\" and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}"
+        "{%- set ns.multi_step_tool = false %}"
+        "{%- set ns.last_query_index = index %}"
+        "{%- endif %}"
+        "{%- endfor %}"
+        "{%- for message in messages %}"
+        '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}'
+        "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
+        '{%- elif message.role == "assistant" %}'
+        "{{- '<|im_start|>' + message.role + '\\n' }}"
+        "{%- call maybe_generation(message.loss is not defined or message.loss is none or message.loss) -%}"
+        "{%- set content = message.content %}"
+        "{%- set reasoning_content = '' %}"
+        "{%- if message.reasoning_content is defined and message.reasoning_content is not none %}"
+        "{%- set reasoning_content = message.reasoning_content %}"
+        "{%- else %}"
+        "{%- if '</think>' in message.content %}"
+        "{%- set content = message.content.split('</think>')[-1].lstrip('\\n') %}"
+        "{%- set reasoning_content = message.content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}"
+        "{%- endif %}"
+        "{%- endif %}"
+        "{%- if loop.index0 > ns.last_query_index %}"
+        "{%- if loop.last or (not loop.last and reasoning_content) %}"
+        "{{- '<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}"
+        "{%- else %}"
+        "{{- content }}"
+        "{%- endif %}"
+        "{%- else %}"
+        "{{- content }}"
+        "{%- endif %}"
+    )
+    + _QWEN3_TOOL_CALLS
+    + "{{- '<|im_end|>' }}{%- endcall -%}{{- '\\n' }}"
+    + _QWEN3_TOOL_RESPONSE
+    + (
+        "{%- if add_generation_prompt %}"
+        "{{- '<|im_start|>assistant\\n' }}"
+        "{%- if enable_thinking is defined and enable_thinking is false %}"
+        "{{- '<think>\\n\\n</think>\\n\\n' }}"
+        "{%- endif %}"
+        "{%- endif %}"
+    )
+)
+
+# Qwen3 rendered without thinking and without rewriting history, equivalent to LLaMA-Factory's
+# `qwen3_nothink`: every assistant message is rendered verbatim, with no think block, and the
+# generation prompt is `<|im_start|>assistant\n`. With it, the training context of every assistant
+# turn equals the inference prompt for that turn, which suits agent trajectories that return
+# observations as user messages (e.g. OpenHands with non-native function calling). Messages that
+# carry `reasoning_content` are rejected, since this template has no place to render it.
+QWEN3_NOTHINK_TEMPLATE = (
+    _MAYBE_GENERATION_MACRO
+    + _QWEN3_SYSTEM_AND_TOOLS
+    + (
+        "{%- for message in messages %}"
+        '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}'
+        "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
+        '{%- elif message.role == "assistant" %}'
+        "{%- if message.reasoning_content %}"
+        "{{- raise_exception('qwen3_nothink renders assistant messages verbatim and has no place for reasoning_content') }}"
+        "{%- endif %}"
+        "{{- '<|im_start|>' + message.role + '\\n' }}"
+        "{%- call maybe_generation(message.loss is not defined or message.loss is none or message.loss) -%}"
+        "{%- set content = message.content if message.content is string else '' %}"
+        "{{- content }}"
+    )
+    + _QWEN3_TOOL_CALLS
+    + "{{- '<|im_end|>' }}{%- endcall -%}{{- '\\n' }}"
+    + _QWEN3_TOOL_RESPONSE
+    + "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}"
 )

@@ -9,6 +9,12 @@ from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from transformers.testing_utils import CaptureLogger
 
 from lmflow.args import DatasetArguments
+from lmflow.tokenization.conversation_checks import (
+    assistant_spans,
+    check_train_inference_prefix,
+    turn_boundary_cut,
+    validate_message_loss_controls,
+)
 from lmflow.utils.constants import CONVERSATION_ROLE_NAMES
 from lmflow.utils.conversation_template import ConversationTemplate
 
@@ -139,8 +145,13 @@ def conversation_tokenize_function(
     tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
     column_names,
     conversation_template: Union[ConversationTemplate, str],
+    inference_conversation_template: Optional[str] = None,
 ) -> dict:
-    """Handels conversation datasets tokenization"""
+    """Handels conversation datasets tokenization
+
+    `inference_conversation_template` is the jinja template the model will be served with, used by the
+    train/inference prefix check; it defaults to `conversation_template`.
+    """
     num_example = len(examples[column_names[0]])
     token_dict = {
         "input_ids": [[] for _ in range(num_example)],
@@ -152,6 +163,7 @@ def conversation_tokenize_function(
             messages = examples["messages"][i]
             system = examples.get("system", [None] * num_example)[i]
             tools = examples.get("tools", [None] * num_example)[i]
+            validate_message_loss_controls(messages, conversation_template, data_args.train_on_prompt, tokenizer)
 
             if isinstance(conversation_template, str):  # jinja template
                 conversation = [{"role": "system", "content": system}] if system is not None else []
@@ -164,15 +176,37 @@ def conversation_tokenize_function(
                     return_dict=True,
                 )
 
+                input_ids = list(encoded_conversation["input_ids"])
+                attention_mask = list(encoded_conversation["attention_mask"])
                 if data_args.train_on_prompt:
-                    labels = list(encoded_conversation["input_ids"])
+                    labels = list(input_ids)
                 else:
-                    labels = _build_assistant_only_labels(
-                        encoded_conversation["input_ids"], encoded_conversation.get("assistant_masks")
-                    )
+                    labels = _build_assistant_only_labels(input_ids, encoded_conversation.get("assistant_masks"))
+                    assistant_masks = encoded_conversation["assistant_masks"]
+                    if data_args.conversation_prefix_check:
+                        check_train_inference_prefix(
+                            tokenizer,
+                            conversation,
+                            tools,
+                            input_ids,
+                            assistant_masks,
+                            train_template=conversation_template,
+                            inference_template=inference_conversation_template or conversation_template,
+                        )
+                    if (
+                        data_args.disable_group_texts
+                        and data_args.truncate_at_turn_boundary
+                        and tokenizer.truncation_side == "right"
+                        and data_args.block_size is not None
+                        and len(input_ids) > min(data_args.block_size, tokenizer.model_max_length)
+                    ):
+                        max_length = min(data_args.block_size, tokenizer.model_max_length)
+                        keep = turn_boundary_cut(assistant_spans(assistant_masks), max_length)
+                        if keep is not None:
+                            input_ids, attention_mask, labels = input_ids[:keep], attention_mask[:keep], labels[:keep]
 
-                token_dict["input_ids"][i].extend(encoded_conversation["input_ids"])
-                token_dict["attention_mask"][i].extend(encoded_conversation["attention_mask"])
+                token_dict["input_ids"][i].extend(input_ids)
+                token_dict["attention_mask"][i].extend(attention_mask)
                 token_dict["labels"][i].extend(labels)
 
             else:  # lmflow `conversation_template`

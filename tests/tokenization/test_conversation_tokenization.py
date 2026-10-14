@@ -33,10 +33,12 @@ class _StaticChatTokenizer:
 
 
 def _data_args(*, block_size=8, train_on_prompt=False):
+    # The static tokenizer cannot render text, so these tests leave the prefix check out.
     return DatasetArguments(
         block_size=block_size,
         disable_group_texts=True,
         train_on_prompt=train_on_prompt,
+        conversation_prefix_check=False,
     )
 
 

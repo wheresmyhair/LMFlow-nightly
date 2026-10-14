@@ -129,6 +129,7 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
         #        "text2text": "output" only
         tokenized_column_order = None  # Handles 1) and 2)
         label_columns = None  # Handles 3)
+        inference_conversation_template = None
         if dataset_type == "text_only":
             tokenized_column_order = ["text"]
             label_columns = ["text"]
@@ -169,6 +170,17 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
                     conversation_template = PRESET_TEMPLATES["empty"]
 
             logger.warning(f"Conversation template: {conversation_template}")
+
+            if data_args.inference_conversation_template:
+                name = data_args.inference_conversation_template
+                if name in ("tokenizer", "hf_auto"):
+                    inference_conversation_template = getattr(self.tokenizer, "chat_template", None)
+                elif isinstance(PRESET_TEMPLATES.get(name), str):
+                    inference_conversation_template = PRESET_TEMPLATES[name]
+                if not isinstance(inference_conversation_template, str):
+                    raise NotImplementedError(
+                        f"Inference conversation template {name} must resolve to a jinja chat template."
+                    )
         else:
             raise NotImplementedError(
                 f'dataset type "{dataset_type}" is not supported, currently'
@@ -191,6 +203,7 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
         }
         if "conversation" in dataset_type:
             tokenize_fn_kwargs["conversation_template"] = conversation_template
+            tokenize_fn_kwargs["inference_conversation_template"] = inference_conversation_template
         else:
             tokenize_fn_kwargs["label_columns"] = label_columns
             tokenize_fn_kwargs["tokenized_column_order"] = tokenized_column_order
@@ -210,7 +223,14 @@ class HFDecoderModel(DecoderModel, HFModelMixin, Tunable):
                         if "conversation" in dataset_type
                         else ""
                     )
-                    + (f"###train_on_prompt={data_args.train_on_prompt}" if "conversation" in dataset_type else "")
+                    + (
+                        f"###train_on_prompt={data_args.train_on_prompt}"
+                        f"###conversation_prefix_check={data_args.conversation_prefix_check}"
+                        f"###inference_conversation_template={inference_conversation_template}"
+                        f"###truncate_at_turn_boundary={data_args.truncate_at_turn_boundary}"
+                        if "conversation" in dataset_type
+                        else ""
+                    )
                     + f"###disable_group_texts={data_args.disable_group_texts}"
                     + f"###block_size={data_args.block_size}"
                 ).encode("utf-8")

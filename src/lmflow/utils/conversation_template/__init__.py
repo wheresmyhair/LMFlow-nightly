@@ -19,6 +19,7 @@ from .qwen import (
     QWEN2_5_TEMPLATE,
     QWEN2_TEMPLATE,
     QWEN2_TEMPLATE_FOR_TOOL,
+    QWEN3_NOTHINK_TEMPLATE,
     QWEN3_TEMPLATE,
     QWEN_QWQ_TEMPLATE,
 )
@@ -64,6 +65,7 @@ JINJA_TEMPLATES = {
     "qwen2_5_math": QWEN2_5_MATH_TEMPLATE,
     "qwen_qwq": QWEN_QWQ_TEMPLATE,
     "qwen3": QWEN3_TEMPLATE,
+    "qwen3_nothink": QWEN3_NOTHINK_TEMPLATE,
     "gemma3": GEMMA3_TEMPLATE,
 }
 

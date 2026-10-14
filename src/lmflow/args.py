@@ -579,6 +579,36 @@ class DatasetArguments:
             )
         },
     )
+    conversation_prefix_check: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "For conversation datasets rendered with a jinja chat template: check that every supervised "
+                "assistant message is trained in the same context the model sees at inference, i.e. the training "
+                "tokens before it equal the inference template applied to the preceding messages with "
+                "add_generation_prompt=True, and no token of that prompt is supervised. Samples that fail raise."
+            )
+        },
+    )
+    inference_conversation_template: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "The chat template the trained model will be served with, used by `conversation_prefix_check`. "
+                "Accepts the same values as `conversation_template`. Defaults to the training template."
+            )
+        },
+    )
+    truncate_at_turn_boundary: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "For conversation datasets rendered with a jinja chat template and right truncation: cut samples "
+                "longer than block_size after the last supervised assistant message that fits, instead of in the "
+                "middle of a message."
+            )
+        },
+    )
     dataset_cache_dir: Optional[str] = field(
         default=None,
         metadata={
